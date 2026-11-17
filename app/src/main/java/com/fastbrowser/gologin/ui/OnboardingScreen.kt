@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.fastbrowser.gologin.model.ProxyTransport
 import com.fastbrowser.gologin.model.ServerNode
 import com.fastbrowser.gologin.network.LatencyMonitor
 import com.fastbrowser.gologin.ui.theme.Emerald
@@ -87,7 +88,7 @@ fun OnboardingScreen(viewModel: BrowserViewModel) {
                         Text(flagFor(server.countryCode), style = MaterialTheme.typography.titleLarge)
                         Spacer(Modifier.width(8.dp))
                         Text(server.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                        Text("${server.protocol}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${server.protocol}" + if (server.transport == ProxyTransport.WEBSOCKET) " • WebSocket" else "", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Text(
                         "${server.host}:${server.port} • user ${server.username}",

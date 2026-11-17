@@ -53,6 +53,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.fastbrowser.gologin.App
+import com.fastbrowser.gologin.model.ProxyTransport
 import com.fastbrowser.gologin.model.SearchEngine
 import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
@@ -355,9 +356,9 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("FastBrowser 1.0.2", style = MaterialTheme.typography.titleMedium)
+                    Text("FastBrowser 1.0.3", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Test build — proxy auth OFF, no password needed",
+                        "Test build — proxy auth OFF, no password needed • Sweden via Cloudflare (WebSocket)",
                         style = MaterialTheme.typography.bodySmall,
                         color = Emerald
                     )
@@ -372,7 +373,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        "Servers: ${servers.joinToString { "${it.name} ${it.host}:${it.port}" }}",
+                        "Servers: ${servers.joinToString { "${it.name} ${it.host}:${it.port}" + if (it.transport == ProxyTransport.WEBSOCKET) " (WS)" else "" }}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(6.dp))

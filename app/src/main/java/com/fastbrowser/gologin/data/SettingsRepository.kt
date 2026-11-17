@@ -11,6 +11,7 @@ import com.fastbrowser.gologin.model.BackupBundle
 import com.fastbrowser.gologin.model.Bookmark
 import com.fastbrowser.gologin.model.BrowserProfile
 import com.fastbrowser.gologin.model.ProxyProtocol
+import com.fastbrowser.gologin.model.ProxyTransport
 import com.fastbrowser.gologin.model.ServerNode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -23,8 +24,9 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /**
  * DataStore persistence for servers, profiles and settings.
  * Passwords live ONLY here (on-device DataStore) — never in the repo or in code.
- * Pre-seeds Stockholm + Ohio with blank username/password on first launch
- * (TEST BUILD v1.0.2: the servers run NO-AUTH, so blank user+pass is correct).
+ * Pre-seeds Stockholm + Ohio (direct) and Stockholm-via-Cloudflare (WebSocket)
+ * with blank username/password on first launch (TEST BUILD v1.0.2+: the
+ * servers run NO-AUTH, so blank user+pass is correct).
  */
 class SettingsRepository(private val context: Context) {
 
@@ -39,6 +41,7 @@ class SettingsRepository(private val context: Context) {
     companion object {
         const val STOCKHOLM_ID = "server-stockholm"
         const val OHIO_ID = "server-ohio"
+        const val STOCKHOLM_CF_ID = "server-stockholm-cf"
         const val DEFAULT_PROFILE_ID = "default_profile"
 
         fun defaultServers(): List<ServerNode> = listOf(
@@ -65,6 +68,23 @@ class SettingsRepository(private val context: Context) {
                 password = "",
                 countryCode = "US",
                 timezoneOverride = "America/New_York"
+            ),
+            // v1.0.3: Sweden through Cloudflare. Direct TCP to Sweden:10800/10801
+            // is DPI-dropped from Iran (the proxy handshake never gets through),
+            // but the same Gost behind Cloudflare on WSS :2083 works — it looks
+            // like ordinary HTTPS. Server side verified end-to-end from Ohio.
+            ServerNode(
+                id = STOCKHOLM_CF_ID,
+                name = "Stockholm (Cloudflare)",
+                host = "cf-gost.limoo.indevs.in",
+                port = 2083,
+                protocol = ProxyProtocol.SOCKS5,
+                username = "",
+                password = "",
+                countryCode = "SE",
+                timezoneOverride = "Europe/Stockholm",
+                transport = ProxyTransport.WEBSOCKET,
+                wsPath = "/ws"
             )
         )
 
@@ -150,6 +170,20 @@ class SettingsRepository(private val context: Context) {
         }
         if (changed) saveServers(migrated)
         return changed
+    }
+
+    /**
+     * v1.0.3 one-time migration: existing installs have only the two direct
+     * servers stored, so append "Stockholm (Cloudflare)" (the WebSocket
+     * route) if it is missing. Runs on every launch but only writes once.
+     * Returns true when anything was changed.
+     */
+    suspend fun migrateAddCloudflareServer(): Boolean {
+        val current = serversFlow.first()
+        if (current.any { it.id == STOCKHOLM_CF_ID }) return false
+        val cfServer = defaultServers().first { it.id == STOCKHOLM_CF_ID }
+        saveServers(current + cfServer)
+        return true
     }
 
     suspend fun saveProfiles(profiles: List<BrowserProfile>) {

@@ -127,6 +127,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             // TEST BUILD (v1.0.2): strip the old auth from the two known servers on
             // existing installs, so the test build browses with no password at all.
             repository.migrateKnownServersToNoAuth()
+            // v1.0.3: add the Stockholm-via-Cloudflare (WebSocket) server to
+            // existing installs that only stored the two direct servers.
+            repository.migrateAddCloudflareServer()
             combine(
                 repository.serversFlow,
                 repository.profilesFlow,

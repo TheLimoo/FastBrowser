@@ -1,6 +1,7 @@
 package com.fastbrowser.gologin.network
 
 import com.fastbrowser.gologin.model.ProxyProtocol
+import com.fastbrowser.gologin.model.ProxyTransport
 import com.fastbrowser.gologin.model.ServerNode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,9 +16,13 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * Embedded high-speed local HTTP CONNECT / HTTP Proxy bridge bound to 127.0.0.1.
@@ -27,7 +32,9 @@ import java.util.concurrent.atomic.AtomicReference
  * 2. Switching between Server 1 and Server 2 updates [activeServerRef] atomically in <1ms
  *    without restarting WebView or re-applying system proxy overrides.
  * 3. Handles upstream SOCKS5 (RFC 1928 + RFC 1929 User/Pass) and HTTP CONNECT with remote DNS
- *    resolution (zero local DNS leaks) and TCP_NODELAY enabled on both sockets.
+ *    resolution (zero local DNS leaks) and TCP_NODELAY enabled on both sockets. Servers with
+ *    transport=WEBSOCKET first open a TLS + WebSocket connection (WebSocketUpstreamSocket)
+ *    and run the same proxy protocol inside masked WS frames — the Cloudflare route.
  * 4. Enforces a strict Kill-Switch: if [killSwitchEnabled] is true and no server is active or
  *    the upstream server is unreachable, connections are immediately closed (never leaked).
  */
@@ -235,18 +242,105 @@ class LocalProxyBridge {
     }
 
     private fun connectToProxyServer(server: ServerNode, destHost: String, destPort: Int): Socket {
-        val sock = Socket()
-        sock.tcpNoDelay = true
-        sock.keepAlive = true
-        sock.receiveBufferSize = 65536
-        sock.sendBufferSize = 65536
-        sock.connect(InetSocketAddress(server.host.trim(), server.port), 8_000)
+        val sock: Socket = if (server.transport == ProxyTransport.WEBSOCKET) {
+            // WSS first (TLS + WS handshake), then the proxy protocol runs
+            // inside WS frames — see connectWebSocketUpstream.
+            connectWebSocketUpstream(server)
+        } else {
+            val plain = Socket()
+            plain.tcpNoDelay = true
+            plain.keepAlive = true
+            plain.receiveBufferSize = 65536
+            plain.sendBufferSize = 65536
+            plain.connect(InetSocketAddress(server.host.trim(), server.port), 8_000)
+            plain
+        }
 
         when (server.protocol) {
             ProxyProtocol.SOCKS5 -> performSocks5Handshake(sock, server, destHost, destPort)
             ProxyProtocol.HTTP -> performHttpConnectHandshake(sock, server, destHost, destPort)
         }
         return sock
+    }
+
+    /**
+     * WebSocket upstream (v1.0.3): TLS to host:port (standard verification,
+     * SNI = host — the Cloudflare edge cert is a normal public cert, no
+     * pinning), then the WS handshake on [ServerNode.wsPath]. The returned
+     * socket's streams are WS frames, so the SOCKS5/HTTP handshake above
+     * runs on top of it unchanged. Verified against Gost auto+wss behind
+     * Cloudflare: 101 → SOCKS5 greeting → CONNECT → Sweden exit IP.
+     */
+    private fun connectWebSocketUpstream(server: ServerNode): Socket {
+        val host = server.host.trim()
+        val plain = Socket()
+        plain.tcpNoDelay = true
+        plain.keepAlive = true
+        plain.receiveBufferSize = 65536
+        plain.sendBufferSize = 65536
+        try {
+            plain.connect(InetSocketAddress(host, server.port), 8_000)
+            plain.soTimeout = 10_000
+            val tls = SSLSocketFactory.getDefault()
+                .createSocket(plain, host, server.port, true) as SSLSocket
+            tls.tcpNoDelay = true
+            tls.startHandshake()
+
+            // One BufferedInputStream for the handshake read AND the frame
+            // reader: a second buffer would swallow bytes read ahead past
+            // the header block (the first WS frame can already be in it).
+            val rawIn = BufferedInputStream(tls.getInputStream(), 8192)
+            val rawOut = tls.getOutputStream()
+
+            val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            val key = Base64.getEncoder().encodeToString(keyBytes)
+            val path = server.wsPath.ifBlank { "/ws" }
+            val req = StringBuilder()
+            req.append("GET $path HTTP/1.1\r\n")
+            req.append("Host: $host:${server.port}\r\n")
+            req.append("Upgrade: websocket\r\n")
+            req.append("Connection: Upgrade\r\n")
+            req.append("Sec-WebSocket-Key: $key\r\n")
+            req.append("Sec-WebSocket-Version: 13\r\n")
+            req.append("\r\n")
+            rawOut.write(req.toString().toByteArray(StandardCharsets.US_ASCII))
+            rawOut.flush()
+
+            val statusLine = readLineAscii(rawIn)
+                ?: throw IllegalStateException("WS handshake failed: empty response")
+            if (!statusLine.contains(" 101 ")) {
+                throw IllegalStateException("WS handshake failed: $statusLine")
+            }
+            var accept: String? = null
+            while (true) {
+                val line = readLineAscii(rawIn) ?: break
+                if (line.isEmpty()) break
+                if (line.startsWith("Sec-WebSocket-Accept:", ignoreCase = true)) {
+                    accept = line.substringAfter(":").trim()
+                }
+            }
+            val expected = Base64.getEncoder().encodeToString(
+                MessageDigest.getInstance("SHA-1")
+                    .digest("$key$WS_GUID".toByteArray(StandardCharsets.US_ASCII))
+            )
+            if (accept == null || accept != expected) {
+                throw IllegalStateException("WS handshake failed: bad Sec-WebSocket-Accept")
+            }
+            return WebSocketUpstreamSocket(tls, rawIn, rawOut)
+        } catch (e: Exception) {
+            try {
+                plain.close()
+            } catch (_: Exception) {
+            }
+            if (e is IllegalStateException && e.message?.startsWith("WS handshake failed") == true) throw e
+            throw IllegalStateException(
+                "WS handshake failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}", e
+            )
+        }
+    }
+
+    private companion object {
+        const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     }
 
     /**

@@ -9,6 +9,19 @@ enum class ProxyProtocol {
     HTTP
 }
 
+/**
+ * How the bridge reaches the upstream proxy.
+ * DIRECT: plain TCP to host:port (the Ohio + Stockholm-direct servers).
+ * WEBSOCKET: TLS + WebSocket handshake first, then the proxy protocol bytes
+ * travel inside masked WS frames (v1.0.3: the Stockholm-via-Cloudflare
+ * server — direct TCP to Sweden is DPI-dropped from Iran, Cloudflare is not).
+ */
+@Serializable
+enum class ProxyTransport {
+    DIRECT,
+    WEBSOCKET
+}
+
 @Serializable
 data class ServerNode(
     val id: String = UUID.randomUUID().toString(),
@@ -20,7 +33,9 @@ data class ServerNode(
     val password: String = "",
     val countryCode: String = "AUTO",
     val timezoneOverride: String = "",
-    val languageOverride: String = ""
+    val languageOverride: String = "",
+    val transport: ProxyTransport = ProxyTransport.DIRECT,
+    val wsPath: String = "/ws"
 )
 
 @Serializable
