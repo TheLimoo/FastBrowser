@@ -117,7 +117,7 @@ fun SettingsScreen(
                 title = "Strict Kill-Switch",
                 subtitle = "Block all traffic if the selected server disconnects — your real IP never leaks.",
                 checked = settings.killSwitchEnabled,
-                onCheckedChange = { viewModel.updateSettings { it.copy(killSwitchEnabled = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(killSwitchEnabled = enabled) } }
             )
             SettingsToggle(
                 title = "Auto-select fastest server",
@@ -164,13 +164,13 @@ fun SettingsScreen(
                 title = "WebRTC IP leak blocker",
                 subtitle = "Strip STUN/ICE candidates so sites cannot see your real carrier or Wi-Fi IP.",
                 checked = settings.blockWebRtcGlobal,
-                onCheckedChange = { viewModel.updateSettings { it.copy(blockWebRtcGlobal = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(blockWebRtcGlobal = enabled) } }
             )
             SettingsToggle(
                 title = "Block third-party cookies",
                 subtitle = "Stops cross-site trackers from following you between sites.",
                 checked = settings.blockThirdPartyCookies,
-                onCheckedChange = { viewModel.updateSettings { it.copy(blockThirdPartyCookies = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(blockThirdPartyCookies = enabled) } }
             )
             SettingsRow(
                 title = "Clear active profile data",
@@ -189,13 +189,13 @@ fun SettingsScreen(
                 title = "AMOLED pure black",
                 subtitle = "True #000000 background — saves battery on OLED screens.",
                 checked = settings.amoledBlackTheme,
-                onCheckedChange = { viewModel.updateSettings { it.copy(amoledBlackTheme = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(amoledBlackTheme = enabled) } }
             )
             SettingsToggle(
                 title = "Force dark mode on websites",
                 subtitle = "Algorithmically darken web pages.",
                 checked = settings.forceDarkWebPages,
-                onCheckedChange = { viewModel.updateSettings { it.copy(forceDarkWebPages = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(forceDarkWebPages = enabled) } }
             )
             Text("Address bar position", style = MaterialTheme.typography.bodyMedium)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -234,25 +234,25 @@ fun SettingsScreen(
                 title = "Ad & tracker blocker",
                 subtitle = "Blocks ad networks at the request layer for faster loads.",
                 checked = settings.adAndTrackerBlocker,
-                onCheckedChange = { viewModel.updateSettings { it.copy(adAndTrackerBlocker = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(adAndTrackerBlocker = enabled) } }
             )
             SettingsToggle(
                 title = "Data Saver (block images)",
                 subtitle = "Load text-only pages instantly on slow connections.",
                 checked = settings.blockImagesDataSaver,
-                onCheckedChange = { viewModel.updateSettings { it.copy(blockImagesDataSaver = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(blockImagesDataSaver = enabled) } }
             )
             SettingsToggle(
                 title = "Hardware acceleration",
                 subtitle = "GPU rendering for pages. Turn off if you see rendering glitches.",
                 checked = settings.hardwareAcceleration,
-                onCheckedChange = { viewModel.updateSettings { it.copy(hardwareAcceleration = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(hardwareAcceleration = enabled) } }
             )
             SettingsToggle(
                 title = "Desktop site by default",
                 subtitle = "New tabs request the desktop version of sites.",
                 checked = settings.desktopSiteDefault,
-                onCheckedChange = { viewModel.updateSettings { it.copy(desktopSiteDefault = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(desktopSiteDefault = enabled) } }
             )
 
             // ------------------------------------------------ 5. Search & Home
@@ -298,7 +298,7 @@ fun SettingsScreen(
                 title = "Show new-tab page",
                 subtitle = "Server status cards, quick links and recent tabs on empty tabs.",
                 checked = settings.showNewTabPage,
-                onCheckedChange = { viewModel.updateSettings { it.copy(showNewTabPage = it) } }
+                onCheckedChange = { enabled -> viewModel.updateSettings { it.copy(showNewTabPage = enabled) } }
             )
 
             // ------------------------------------------------ 6. Backup & Portability

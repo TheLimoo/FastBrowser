@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -147,11 +148,6 @@ object WebViewProfileEngine {
                 }
             }
 
-            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                super.onProgressChanged(view, newProgress)
-                onProgressChanged(newProgress)
-            }
-
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -161,6 +157,14 @@ object WebViewProfileEngine {
                 if (request?.isForMainFrame == true && error != null) {
                     onReceivedError(error.description?.toString() ?: "Connection failed")
                 }
+            }
+        }
+
+        // Load progress is a WebChromeClient callback, not a WebViewClient one.
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                super.onProgressChanged(view, newProgress)
+                onProgressChanged(newProgress)
             }
         }
     }
