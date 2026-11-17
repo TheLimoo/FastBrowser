@@ -138,7 +138,14 @@ fun ProxiesScreen(viewModel: BrowserViewModel) {
                                 }
                             }
                         }
-                        if (server.password.isBlank()) {
+                        if (server.username.isBlank() && server.password.isBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "No password — test mode",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (server.password.isBlank()) {
                             Spacer(Modifier.height(6.dp))
                             Text(
                                 "No password set — tap Edit and enter the proxy password to browse through this server.",

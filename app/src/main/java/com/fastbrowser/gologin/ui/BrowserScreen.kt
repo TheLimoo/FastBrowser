@@ -401,9 +401,9 @@ fun BrowserScreen(
                     )
                 }
 
-                // Blank-password guard: never a black page — say exactly what is
-                // missing and open the server editor. (Passwords were entered
-                // in v1.0.0 testing, so this is a safety net, not the v1.0.0 cause.)
+                // Blank-password guard: only when a username is set but the password
+                // is blank. Blank username AND blank password = a no-auth server
+                // (v1.0.2 test build) and must NOT block browsing.
                 if (activeTab != null && needsPasswordServer != null) {
                     PasswordRequiredCard(
                         server = needsPasswordServer,

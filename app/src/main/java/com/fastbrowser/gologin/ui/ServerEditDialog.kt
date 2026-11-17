@@ -111,7 +111,7 @@ fun ServerEditDialog(
                 OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     value = password, onValueChange = { password = it },
-                    label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Password (optional — servers currently need none)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         TextButton(onClick = { showPassword = !showPassword }) {

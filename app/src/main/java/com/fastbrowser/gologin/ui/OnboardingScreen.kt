@@ -43,9 +43,12 @@ import com.fastbrowser.gologin.ui.theme.Emerald
 import kotlinx.coroutines.launch
 
 /**
- * First-launch Quick Connect: both pre-seeded servers with empty password fields,
- * a per-server ping test, then Launch Browser. Passwords are typed once here and
- * stored only in the app's DataStore.
+ * First-launch Quick Connect: both pre-seeded servers with a per-server ping
+ * test, then Launch Browser.
+ *
+ * TEST BUILD (v1.0.2): the servers run NO-AUTH, so no password is needed at
+ * all. The password field is optional and labelled as such; whatever is typed
+ * is still stored only in the app's DataStore, for when auth comes back.
  */
 @Composable
 fun OnboardingScreen(viewModel: BrowserViewModel) {
@@ -68,8 +71,8 @@ fun OnboardingScreen(viewModel: BrowserViewModel) {
         Spacer(Modifier.height(24.dp))
         Text("FastBrowser", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Your traffic routes through your own servers. Enter each server's proxy password once — " +
-                "it stays on this phone only.",
+            "Your traffic routes through your own servers. Test build: the servers " +
+                "currently need no password — just test the ping and launch.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -94,7 +97,7 @@ fun OnboardingScreen(viewModel: BrowserViewModel) {
                     OutlinedTextField(
                         value = passwords[server.id] ?: server.password,
                         onValueChange = { passwords[server.id] = it },
-                        label = { Text("Password") },
+                        label = { Text("Password (optional — servers currently need none)") },
                         singleLine = true,
                         visualTransformation = if (showPassword[server.id] == true) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
@@ -135,12 +138,15 @@ fun OnboardingScreen(viewModel: BrowserViewModel) {
         Button(
             onClick = {
                 saving = true
-                servers.forEach { server ->
+                // ONE atomic save for both servers. (v1.0.1 audit: calling
+                // addOrUpdateServer once per server raced — each call read the
+                // same stale list and the second write overwrote the first, so
+                // only the last server's password survived.)
+                val updated = servers.map { server ->
                     val pw = passwords[server.id]
-                    if (pw != null && pw != server.password) {
-                        viewModel.addOrUpdateServer(server.copy(password = pw))
-                    }
+                    if (pw != null && pw != server.password) server.copy(password = pw) else server
                 }
+                viewModel.saveServersOnce(updated)
                 viewModel.setOnboardingDone()
             },
             enabled = !saving,
@@ -150,8 +156,8 @@ fun OnboardingScreen(viewModel: BrowserViewModel) {
             Text(if (saving) "Starting…" else "Launch Browser")
         }
         Text(
-            "You can change passwords later in Settings → Manage servers. The kill-switch is ON by default: " +
-                "if a server is unreachable, nothing loads instead of leaking your real IP.",
+            "Test build: proxy auth is OFF, so no password is needed to browse. " +
+                "The kill-switch is ON by default: if a server is unreachable, nothing loads instead of leaking your real IP.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

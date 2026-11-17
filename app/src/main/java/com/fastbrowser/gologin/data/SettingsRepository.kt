@@ -23,7 +23,8 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /**
  * DataStore persistence for servers, profiles and settings.
  * Passwords live ONLY here (on-device DataStore) — never in the repo or in code.
- * Pre-seeds Stockholm + Ohio with blank passwords on first launch.
+ * Pre-seeds Stockholm + Ohio with blank username/password on first launch
+ * (TEST BUILD v1.0.2: the servers run NO-AUTH, so blank user+pass is correct).
  */
 class SettingsRepository(private val context: Context) {
 
@@ -47,7 +48,9 @@ class SettingsRepository(private val context: Context) {
                 host = "16.192.116.137",
                 port = 10800,
                 protocol = ProxyProtocol.SOCKS5,
-                username = "fastbrowser",
+                // TEST BUILD (v1.0.2): the servers currently run NO-AUTH, so both
+                // fields are blank. The bridge treats blank user+pass as no-auth.
+                username = "",
                 password = "",
                 countryCode = "SE",
                 timezoneOverride = "Europe/Stockholm"
@@ -58,7 +61,7 @@ class SettingsRepository(private val context: Context) {
                 host = "18.190.239.234",
                 port = 10800,
                 protocol = ProxyProtocol.SOCKS5,
-                username = "fastbrowser",
+                username = "",
                 password = "",
                 countryCode = "US",
                 timezoneOverride = "America/New_York"
@@ -125,6 +128,28 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveServers(servers: List<ServerNode>) {
         context.dataStore.edit { it[serversKey] = json.encodeToString(servers) }
+    }
+
+    /**
+     * TEST BUILD (v1.0.2) one-time migration: existing installs from v1.0.0/v1.0.1
+     * stored the old "fastbrowser" username and a password on the two known
+     * servers. The servers now run NO-AUTH, so strip both fields from the known
+     * server ids. Custom servers the user added themselves are left untouched.
+     * Returns true when anything was changed.
+     */
+    suspend fun migrateKnownServersToNoAuth(): Boolean {
+        val current = serversFlow.first()
+        var changed = false
+        val migrated = current.map { server ->
+            if ((server.id == STOCKHOLM_ID || server.id == OHIO_ID) &&
+                (server.username.isNotBlank() || server.password.isNotBlank())
+            ) {
+                changed = true
+                server.copy(username = "", password = "")
+            } else server
+        }
+        if (changed) saveServers(migrated)
+        return changed
     }
 
     suspend fun saveProfiles(profiles: List<BrowserProfile>) {

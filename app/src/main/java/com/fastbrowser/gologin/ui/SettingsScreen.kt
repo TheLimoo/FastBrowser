@@ -355,7 +355,12 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("FastBrowser 1.0.1", style = MaterialTheme.typography.titleMedium)
+                    Text("FastBrowser 1.0.2", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Test build — proxy auth OFF, no password needed",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Emerald
+                    )
                     Text("Local bridge: 127.0.0.1:${App.localPort}", style = MaterialTheme.typography.bodySmall)
                     Text(
                         "Proxy override: ${if (proxyOverrideApplied) "applied — WebView routes through the bridge" else "not applied yet"}",

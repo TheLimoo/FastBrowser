@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -86,9 +88,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         clearCookiesOnExit = true
     )
 
-    /** The active server, when its password is still blank — browsing cannot work. */
+    /** The active server, when a username is set but its password is blank — browsing cannot work.
+     *  Blank username AND blank password means a no-auth server (v1.0.2 test build): that is
+     *  valid and must NOT block browsing. */
     val needsPasswordServer: ServerNode?
-        get() = activeServer?.takeIf { it.password.isBlank() }
+        get() = activeServer?.takeIf { it.username.isNotBlank() && it.password.isBlank() }
+
+    /**
+     * Serializes every read-modify-write of the server list.
+     * BUG FOUND (v1.0.1 audit): onboarding's Launch button called addOrUpdateServer once per
+     * server; each call launched its own coroutine that read the same stale _servers.value
+     * (both passwords blank), and the second DataStore write overwrote the first — so only
+     * the LAST server's password survived and the active (Stockholm) password was silently
+     * lost. All server-list mutations now go through this mutex.
+     */
+    private val serversMutex = Mutex()
 
     private val _events = MutableSharedFlow<UiEvent>()
     val events: SharedFlow<UiEvent> = _events.asSharedFlow()
@@ -110,6 +124,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             repository.seedIfNeeded()
+            // TEST BUILD (v1.0.2): strip the old auth from the two known servers on
+            // existing installs, so the test build browses with no password at all.
+            repository.migrateKnownServersToNoAuth()
             combine(
                 repository.serversFlow,
                 repository.profilesFlow,
@@ -173,10 +190,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun addOrUpdateServer(server: ServerNode) {
         viewModelScope.launch {
-            val current = _servers.value.toMutableList()
-            val idx = current.indexOfFirst { it.id == server.id }
-            if (idx >= 0) current[idx] = server else current.add(server)
-            repository.saveServers(current)
+            serversMutex.withLock {
+                val current = _servers.value.toMutableList()
+                val idx = current.indexOfFirst { it.id == server.id }
+                if (idx >= 0) current[idx] = server else current.add(server)
+                _servers.value = current
+                repository.saveServers(current)
+            }
             // If we edited the active server, re-push it to the bridge immediately.
             if (server.id == _settings.value.activeServerId) {
                 App.bridge.updateUpstreamServer(server, _settings.value.killSwitchEnabled)
@@ -186,10 +206,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Saves a whole server list in ONE DataStore write (no per-server coroutine
+     * race — see the serversMutex note above). Used by onboarding, which edits
+     * both pre-seeded servers at once.
+     */
+    fun saveServersOnce(servers: List<ServerNode>) {
+        viewModelScope.launch {
+            serversMutex.withLock {
+                _servers.value = servers
+                repository.saveServers(servers)
+            }
+            val active = servers.firstOrNull { it.id == _settings.value.activeServerId }
+            App.bridge.updateUpstreamServer(active, _settings.value.killSwitchEnabled)
+        }
+    }
+
     fun deleteServer(server: ServerNode) {
         viewModelScope.launch {
-            val remaining = _servers.value.filterNot { it.id == server.id }
-            repository.saveServers(remaining)
+            val remaining = serversMutex.withLock {
+                val remaining = _servers.value.filterNot { it.id == server.id }
+                _servers.value = remaining
+                repository.saveServers(remaining)
+                remaining
+            }
             if (server.id == _settings.value.activeServerId) {
                 val fallback = remaining.firstOrNull()
                 App.bridge.updateUpstreamServer(fallback, _settings.value.killSwitchEnabled)
@@ -314,7 +354,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     "OK — through ${activeServer?.name ?: "proxy"} your IP is $body (HTTP $code)"
                 } catch (e: Exception) {
                     "FAILED — ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}. " +
-                        "Check the server password and that the server is reachable."
+                        "Check that the server is reachable."
                 }
             }
             onResult(result)

@@ -255,6 +255,9 @@ class LocalProxyBridge {
     private fun performSocks5Handshake(sock: Socket, server: ServerNode, destHost: String, destPort: Int) {
         val out = sock.getOutputStream()
         val input = DataInputStream(BufferedInputStream(sock.getInputStream()))
+        // No-auth when BOTH fields are blank (v1.0.2 test build: the servers run
+        // without credentials) — the greeting then offers only method 0x00 and no
+        // sub-negotiation happens. Nothing here forces auth on empty credentials.
         val hasAuth = server.username.isNotEmpty() || server.password.isNotEmpty()
 
         // Greeting
