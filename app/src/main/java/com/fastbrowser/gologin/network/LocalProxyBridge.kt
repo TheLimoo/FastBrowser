@@ -281,7 +281,7 @@ class LocalProxyBridge {
         try {
             plain.connect(InetSocketAddress(host, server.port), 8_000)
             plain.soTimeout = 10_000
-            val tls = SSLSocketFactory.getDefault()
+            val tls = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(plain, host, server.port, true) as SSLSocket
             tls.tcpNoDelay = true
             tls.startHandshake()
