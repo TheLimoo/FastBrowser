@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bold emerald "F" mark, centered in the adaptive-icon safe zone. -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M36,24h36v12H50v14h20v12H50v22H36z" />
+    <!-- Signal dot: the browser is always connected through a server. -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M74,74a6,6 0 1,0 0.1,0z" />
+</vector>
