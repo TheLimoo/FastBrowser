@@ -9,13 +9,16 @@ import com.fastbrowser.gologin.App
 import com.fastbrowser.gologin.browser.WebViewProfileEngine
 import com.fastbrowser.gologin.data.SettingsRepository
 import com.fastbrowser.gologin.model.AppSettings
+import com.fastbrowser.gologin.model.Bookmark
 import com.fastbrowser.gologin.model.BrowserProfile
 import com.fastbrowser.gologin.model.BrowserTab
 import com.fastbrowser.gologin.model.ProxyProtocol
 import com.fastbrowser.gologin.model.SearchEngine
 import com.fastbrowser.gologin.model.ServerNode
+import com.fastbrowser.gologin.network.BridgeError
 import com.fastbrowser.gologin.network.LatencyMonitor
 import com.fastbrowser.gologin.network.ServerLatencyResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -25,7 +28,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.URL
 import java.util.UUID
+import javax.net.ssl.HttpsURLConnection
 
 sealed interface UiEvent {
     data class Snack(val message: String, val actionLabel: String? = null, val onAction: (() -> Unit)? = null) : UiEvent
@@ -59,6 +67,29 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _recentUrls = MutableStateFlow<List<String>>(emptyList())
     val recentUrls: StateFlow<List<String>> = _recentUrls.asStateFlow()
 
+    private val _bookmarks = MutableStateFlow<List<Bookmark>>(emptyList())
+    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+
+    /** Last failure reported by the local proxy bridge (auth/connect errors). */
+    val bridgeError: StateFlow<BridgeError?> = App.bridge.lastError
+
+    /** True once the WebView proxy override to 127.0.0.1 has been applied. */
+    val proxyOverrideApplied: StateFlow<Boolean> = App.bridge.proxyOverrideApplied
+
+    val bridgePort: Int get() = App.localPort
+
+    /** Ephemeral incognito profile: never persisted, wiped when its tabs close. */
+    val incognitoProfile = BrowserProfile(
+        id = "incognito",
+        name = "Incognito",
+        assignedServerId = null,
+        clearCookiesOnExit = true
+    )
+
+    /** The active server, when its password is still blank — browsing cannot work. */
+    val needsPasswordServer: ServerNode?
+        get() = activeServer?.takeIf { it.password.isBlank() }
+
     private val _events = MutableSharedFlow<UiEvent>()
     val events: SharedFlow<UiEvent> = _events.asSharedFlow()
 
@@ -83,12 +114,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 repository.serversFlow,
                 repository.profilesFlow,
                 repository.settingsFlow,
-                repository.recentUrlsFlow
-            ) { servers, profiles, settings, recent ->
+                repository.recentUrlsFlow,
+                repository.bookmarksFlow
+            ) { servers, profiles, settings, recent, bookmarks ->
                 _servers.value = servers
                 _profiles.value = profiles
                 _settings.value = settings
                 _recentUrls.value = recent
+                _bookmarks.value = bookmarks
                 // Push the current upstream into the bridge (atomic hot-swap source of truth).
                 val active = servers.firstOrNull { it.id == settings.activeServerId }
                 App.bridge.updateUpstreamServer(active, settings.killSwitchEnabled)
@@ -230,6 +263,89 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateSettings { it.copy(onboardingDone = true) }
     }
 
+    fun profileForTab(tab: BrowserTab): BrowserProfile? {
+        if (tab.profileId == incognitoProfile.id) return incognitoProfile
+        return _profiles.value.firstOrNull { it.id == tab.profileId }
+            ?: _profiles.value.firstOrNull()
+    }
+
+    /** GoLogin-style launch: open the profile's existing tab if it has one, else a new tab. */
+    fun launchProfile(profile: BrowserProfile) {
+        viewModelScope.launch {
+            repository.updateSettings { it.copy(activeProfileId = profile.id) }
+            val existing = _tabs.value.firstOrNull { it.profileId == profile.id }
+            if (existing != null) {
+                _activeTabId.value = existing.id
+            } else {
+                val tab = BrowserTab(profileId = profile.id, desktopMode = _settings.value.desktopSiteDefault)
+                _tabs.value = _tabs.value + tab
+                _activeTabId.value = tab.id
+            }
+            // A profile bound to a server follows that server when launched.
+            profile.assignedServerId?.let { serverId ->
+                _servers.value.firstOrNull { it.id == serverId }?.let { selectServer(it) }
+            }
+        }
+    }
+
+    fun newIncognitoTab() {
+        val tab = BrowserTab(
+            profileId = incognitoProfile.id,
+            desktopMode = _settings.value.desktopSiteDefault
+        )
+        _tabs.value = _tabs.value + tab
+        _activeTabId.value = tab.id
+    }
+
+    fun isIncognitoTab(tab: BrowserTab): Boolean = tab.profileId == incognitoProfile.id
+
+    /** Real end-to-end check: fetches https://api.ipify.org THROUGH the local bridge. */
+    fun testBridgeConnection(onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", App.localPort))
+                    val conn = URL("https://api.ipify.org").openConnection(proxy) as HttpsURLConnection
+                    conn.connectTimeout = 10_000
+                    conn.readTimeout = 15_000
+                    conn.connect()
+                    val code = conn.responseCode
+                    val body = conn.inputStream.bufferedReader().readText().trim()
+                    "OK — through ${activeServer?.name ?: "proxy"} your IP is $body (HTTP $code)"
+                } catch (e: Exception) {
+                    "FAILED — ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}. " +
+                        "Check the server password and that the server is reachable."
+                }
+            }
+            onResult(result)
+        }
+    }
+
+    // ------------------------------------------------------------------ bookmarks / history
+
+    fun addBookmark(url: String, title: String) {
+        viewModelScope.launch {
+            repository.addBookmark(Bookmark(url = url, title = title.ifBlank { url }))
+            _events.emit(UiEvent.Snack("Bookmarked"))
+        }
+    }
+
+    fun removeBookmark(url: String) {
+        viewModelScope.launch {
+            repository.removeBookmark(url)
+            _events.emit(UiEvent.Snack("Bookmark removed"))
+        }
+    }
+
+    fun isBookmarked(url: String): Boolean = _bookmarks.value.any { it.url == url }
+
+    fun clearHistory() {
+        viewModelScope.launch {
+            repository.clearRecentUrls()
+            _events.emit(UiEvent.Snack("History cleared"))
+        }
+    }
+
     // ------------------------------------------------------------------ profiles
 
     fun selectProfile(profile: BrowserProfile) {
@@ -310,6 +426,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closeTab(tabId: String) {
+        val closedTab = _tabs.value.firstOrNull { it.id == tabId }
         val remaining = _tabs.value.filterNot { it.id == tabId }
         _destroyedTabIds.value = _destroyedTabIds.value + tabId
         _tabs.value = remaining
@@ -317,6 +434,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _activeTabId.value = remaining.lastOrNull()?.id
         }
         if (remaining.isEmpty()) newTab()
+        // Closing the last incognito tab wipes its data immediately.
+        if (closedTab?.profileId == incognitoProfile.id &&
+            remaining.none { it.profileId == incognitoProfile.id }
+        ) {
+            viewModelScope.launch { WebViewProfileEngine.wipeProfileData(incognitoProfile.id) }
+        }
     }
 
     fun updateTab(tabId: String, transform: (BrowserTab) -> BrowserTab) {
@@ -400,6 +523,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (profile.clearCookiesOnExit) {
             CookieManager.getInstance().removeAllCookies(null)
             WebStorage.getInstance().deleteAllData()
+        }
+        // Incognito data never survives an app close.
+        if (_tabs.value.any { it.profileId == incognitoProfile.id }) {
+            WebViewProfileEngine.wipeProfileData(incognitoProfile.id)
         }
     }
 

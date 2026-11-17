@@ -100,6 +100,14 @@ data class BrowserTab(
 )
 
 @Serializable
+data class Bookmark(
+    val id: String = UUID.randomUUID().toString(),
+    val url: String,
+    val title: String,
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+
+@Serializable
 data class BackupBundle(
     val servers: List<ServerNode>,
     val profiles: List<BrowserProfile>,

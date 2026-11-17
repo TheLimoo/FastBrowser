@@ -61,7 +61,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun ServerSwitcherSheet(
     viewModel: BrowserViewModel,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** When set (e.g. by the blank-password guard), opens this server's editor immediately. */
+    editServer: ServerNode? = null
 ) {
     val servers by viewModel.servers.collectAsState()
     val settings by viewModel.settings.collectAsState()
@@ -221,9 +223,9 @@ fun ServerSwitcherSheet(
         }
     }
 
-    if (showAddDialog || editingServer != null) {
+    if (showAddDialog || editingServer != null || editServer != null) {
         ServerEditDialog(
-            server = editingServer ?: viewModel.newServerTemplate(),
+            server = editingServer ?: editServer ?: viewModel.newServerTemplate(),
             onDismiss = { showAddDialog = false; editingServer = null },
             onSave = { saved ->
                 viewModel.addOrUpdateServer(saved)
@@ -249,130 +251,4 @@ fun ServerSwitcherSheet(
             }
         )
     }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ServerEditDialog(
-    server: ServerNode,
-    onDismiss: () -> Unit,
-    onSave: (ServerNode) -> Unit
-) {
-    var name by remember { mutableStateOf(server.name) }
-    var host by remember { mutableStateOf(server.host) }
-    var port by remember { mutableStateOf(server.port.toString()) }
-    var protocol by remember { mutableStateOf(server.protocol) }
-    var username by remember { mutableStateOf(server.username) }
-    var password by remember { mutableStateOf(server.password) }
-    var timezone by remember { mutableStateOf(server.timezoneOverride) }
-    var showPassword by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
-    var protocolExpanded by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    val portValid = port.toIntOrNull() in 1..65535
-    val hostValid = host.isNotBlank()
-    val canSave = name.isNotBlank() && hostValid && portValid
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (server.host.isBlank()) "Add Server" else "Edit Server") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = host, onValueChange = { host = it.trim() }, label = { Text("Host / IP") }, singleLine = true, modifier = Modifier.fillMaxWidth(), isError = !hostValid)
-                OutlinedTextField(
-                    value = port, onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
-                    label = { Text("Port") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    isError = !portValid
-                )
-                ExposedDropdownMenuBox(
-                    expanded = protocolExpanded,
-                    onExpandedChange = { protocolExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = protocol.name,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Protocol") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = protocolExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
-                    )
-                    ExposedDropdownMenu(expanded = protocolExpanded, onDismissRequest = { protocolExpanded = false }) {
-                        ProxyProtocol.entries.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Text(p.name) },
-                                onClick = { protocol = p; protocolExpanded = false }
-                            )
-                        }
-                    }
-                }
-                OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(
-                    value = password, onValueChange = { password = it },
-                    label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        TextButton(onClick = { showPassword = !showPassword }) {
-                            Text(if (showPassword) "Hide" else "Show")
-                        }
-                    }
-                )
-                OutlinedTextField(value = timezone, onValueChange = { timezone = it }, label = { Text("Timezone override (optional)") }, placeholder = { Text("Europe/Stockholm") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedButton(
-                    onClick = {
-                        testing = true
-                        testResult = null
-                        scope.launch {
-                            val probe = ServerNode(
-                                id = server.id, name = name, host = host,
-                                port = port.toIntOrNull() ?: 0, protocol = protocol,
-                                username = username, password = password
-                            )
-                            val result = LatencyMonitor.pingServer(probe)
-                            testResult = if (result.isOnline) "Reachable — ${result.rttMs} ms TCP handshake"
-                            else "Unreachable — check host, port and firewall"
-                            testing = false
-                        }
-                    },
-                    enabled = hostValid && portValid && !testing,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.Speed, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (testing) "Testing…" else "Test Connection & Latency")
-                }
-                testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Reachable")) Emerald else DangerRed) }
-                Text(
-                    "Password is stored only on this phone, in the app's private DataStore. It is never uploaded.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onSave(
-                        server.copy(
-                            name = name.trim(), host = host.trim(),
-                            port = port.toIntOrNull() ?: server.port,
-                            protocol = protocol, username = username.trim(),
-                            password = password, timezoneOverride = timezone.trim()
-                        )
-                    )
-                },
-                enabled = canSave,
-                colors = ButtonDefaults.buttonColors(containerColor = Emerald, contentColor = Color.Black)
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
 }

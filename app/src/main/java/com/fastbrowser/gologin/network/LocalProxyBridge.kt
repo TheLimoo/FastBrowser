@@ -3,6 +3,10 @@ package com.fastbrowser.gologin.network
 import com.fastbrowser.gologin.model.ProxyProtocol
 import com.fastbrowser.gologin.model.ServerNode
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.selects.select
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.InputStream
@@ -27,6 +31,13 @@ import java.util.concurrent.atomic.AtomicReference
  * 4. Enforces a strict Kill-Switch: if [killSwitchEnabled] is true and no server is active or
  *    the upstream server is unreachable, connections are immediately closed (never leaked).
  */
+/** Last bridge failure, surfaced to the Diagnostics screen instead of a silent black page. */
+data class BridgeError(
+    val message: String,
+    val serverName: String?,
+    val atMillis: Long = System.currentTimeMillis()
+)
+
 class LocalProxyBridge {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -35,6 +46,16 @@ class LocalProxyBridge {
 
     private val activeServerRef = AtomicReference<ServerNode?>(null)
     private val killSwitchRef = AtomicBoolean(true)
+
+    private val _lastError = MutableStateFlow<BridgeError?>(null)
+    val lastError: StateFlow<BridgeError?> = _lastError.asStateFlow()
+
+    private val _proxyOverrideApplied = MutableStateFlow(false)
+    val proxyOverrideApplied: StateFlow<Boolean> = _proxyOverrideApplied.asStateFlow()
+
+    fun markProxyOverrideApplied() {
+        _proxyOverrideApplied.value = true
+    }
 
     @Volatile
     var localPort: Int = 0
@@ -108,7 +129,7 @@ class LocalProxyBridge {
                     return@withContext
                 } else {
                     // Direct mode (only when Kill-Switch is explicitly disabled)
-                    handleDirectConnection(method, target, httpVersion, headers, clientIn, clientOut)
+                    handleDirectConnection(method, target, httpVersion, headers, clientSocket, clientIn, clientOut)
                     return@withContext
                 }
             }
@@ -116,7 +137,20 @@ class LocalProxyBridge {
             val (destHost, destPort) = parseHostPort(method, target, headers)
                 ?: return@withContext
 
-            upstreamSocket = connectToProxyServer(server, destHost, destPort)
+            upstreamSocket = try {
+                connectToProxyServer(server, destHost, destPort)
+            } catch (e: Exception) {
+                // Auth/connect failure used to close the socket silently, leaving
+                // WebView on a black page. Record it and answer the client with
+                // a real 502 so the failure is visible instead of silent.
+                val msg = e.message ?: "Proxy connection failed"
+                _lastError.value = BridgeError(msg, server.name)
+                try {
+                    sendHttpError(clientOut, 502, "Proxy error (${server.name}): $msg")
+                } catch (_: Exception) {
+                }
+                return@withContext
+            }
             upstreamSocket.soTimeout = 60_000
             val upstreamIn = upstreamSocket.getInputStream()
             val upstreamOut = upstreamSocket.getOutputStream()
@@ -142,18 +176,61 @@ class LocalProxyBridge {
                 upstreamOut.flush()
             }
 
-            // Bidirectional zero-copy-style stream pump
-            coroutineScope {
-                val upJob = launch { pumpStream(clientIn, upstreamOut) }
-                val downJob = launch { pumpStream(upstreamIn, clientOut) }
-                upJob.join()
-                downJob.join()
+            // Bidirectional relay: when EITHER direction ends, tear the tunnel
+            // down at once. Joining both pumps deadlocked: the server closes
+            // its write side after a response while WebView never half-closes
+            // the tunnel first, so the upload pump stayed blocked in read()
+            // and every HTTPS page hung until the socket timeout.
+            relayBothDirections(
+                clientSocket, upstreamSocket,
+                clientIn, clientOut, upstreamIn, upstreamOut
+            )
+        } catch (e: Exception) {
+            // Connection reset / aborted by page navigation — routine, not an error.
+            val msg = e.message.orEmpty()
+            if (msg.isNotBlank() &&
+                !msg.contains("reset", ignoreCase = true) &&
+                !msg.contains("Broken pipe", ignoreCase = true)
+            ) {
+                _lastError.value = BridgeError("Bridge error: $msg", activeServerRef.get()?.name)
             }
-        } catch (_: Exception) {
-            // Connection reset / aborted by page navigation
         } finally {
             try { upstreamSocket?.close() } catch (_: Exception) {}
             try { clientSocket.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Relays bytes in both directions until EITHER side ends, then closes
+     * both sockets immediately so the other pump unblocks at once. Never
+     * relies on the socket timeout for normal completion.
+     */
+    private suspend fun relayBothDirections(
+        clientSocket: Socket,
+        upstreamSocket: Socket,
+        clientIn: InputStream,
+        clientOut: OutputStream,
+        upstreamIn: InputStream,
+        upstreamOut: OutputStream
+    ) {
+        coroutineScope {
+            val upJob = launch { pumpStream(clientIn, upstreamOut) }
+            val downJob = launch { pumpStream(upstreamIn, clientOut) }
+            // Wait for the FIRST direction to finish — not both.
+            select<Unit> {
+                upJob.onJoin {}
+                downJob.onJoin {}
+            }
+            // Unblock the pump still stuck in read() before cancelling it:
+            // blocking InputStream.read() does not react to cancellation.
+            try { clientSocket.shutdownInput() } catch (_: Exception) {}
+            try { clientSocket.shutdownOutput() } catch (_: Exception) {}
+            try { upstreamSocket.shutdownInput() } catch (_: Exception) {}
+            try { upstreamSocket.shutdownOutput() } catch (_: Exception) {}
+            upJob.cancel()
+            downJob.cancel()
+            upJob.join()
+            downJob.join()
         }
     }
 
@@ -277,6 +354,7 @@ class LocalProxyBridge {
         target: String,
         httpVersion: String,
         headers: List<String>,
+        clientSocket: Socket,
         clientIn: InputStream,
         clientOut: OutputStream
     ) {
@@ -298,10 +376,12 @@ class LocalProxyBridge {
                 upOut.write(sb.toString().toByteArray(StandardCharsets.ISO_8859_1))
                 upOut.flush()
             }
-            coroutineScope {
-                launch { pumpStream(clientIn, upOut) }
-                launch { pumpStream(upIn, clientOut) }
-            }
+            // Same first-direction-ends teardown as the proxied path: joining
+            // both pumps deadlocks when the peer never half-closes first.
+            relayBothDirections(
+                clientSocket, directSock,
+                clientIn, clientOut, upIn, upOut
+            )
         } finally {
             directSock.close()
         }

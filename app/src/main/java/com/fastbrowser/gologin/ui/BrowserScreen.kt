@@ -1,6 +1,7 @@
 package com.fastbrowser.gologin.ui
 
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.Intent
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
@@ -24,9 +25,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -38,8 +41,15 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -47,6 +57,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -61,6 +73,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
@@ -68,6 +81,7 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -100,6 +114,7 @@ import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
 import com.fastbrowser.gologin.ui.theme.WarningAmber
 import kotlinx.coroutines.launch
+import java.net.URLEncoder
 
 fun cleanDomain(url: String): String {
     if (url.isBlank()) return ""
@@ -128,7 +143,9 @@ fun latencyColor(rttMs: Long?): Color = when {
 @Composable
 fun BrowserScreen(
     viewModel: BrowserViewModel = viewModel(),
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    /** Back out of the browser to the Profiles home (GoLogin/Orbita-style shell). */
+    onExitBrowser: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -141,19 +158,28 @@ fun BrowserScreen(
     val latency by viewModel.latency.collectAsState()
     val pinging by viewModel.pinging.collectAsState()
     val recentUrls by viewModel.recentUrls.collectAsState()
+    val bookmarks by viewModel.bookmarks.collectAsState()
     val destroyedTabIds by viewModel.destroyedTabIds.collectAsState()
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
     val activeServer = servers.firstOrNull { it.id == settings.activeServerId }
     val activeProfile = profiles.firstOrNull { it.id == settings.activeProfileId }
+    // Incognito tabs resolve to the ephemeral profile, not the settings one.
+    val displayProfile = activeTab?.let { viewModel.profileForTab(it) } ?: activeProfile
+    val needsPasswordServer = viewModel.needsPasswordServer
 
     // tabId -> WebView map: tab state survives server switches and tab switches.
     val webViews = remember { mutableStateMapOf<String, WebView>() }
 
     var showServerSheet by remember { mutableStateOf(false) }
+    var serverToEdit by remember { mutableStateOf<ServerNode?>(null) }
     var showProfilesSheet by remember { mutableStateOf(false) }
     var showTabSwitcher by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showFindBar by remember { mutableStateOf(false) }
+    var findQuery by remember { mutableStateOf("") }
+    var showBookmarks by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
     var urlFocused by remember { mutableStateOf(false) }
     var urlInput by remember { mutableStateOf("") }
     var showCopyMenu by remember { mutableStateOf(false) }
@@ -190,12 +216,18 @@ fun BrowserScreen(
     val activeWebView = activeTab?.let { webViews[it.id] }
     val canGoBack = activeTab?.canGoBack == true
 
-    BackHandler(enabled = showTabSwitcher || showServerSheet || showProfilesSheet || canGoBack) {
+    // Back closes overlays first, then goes back in the page, then exits the
+    // browser to the Profiles home — never out of the app by accident.
+    BackHandler(enabled = true) {
         when {
             showTabSwitcher -> showTabSwitcher = false
-            showServerSheet -> showServerSheet = false
+            showServerSheet -> { showServerSheet = false; serverToEdit = null }
             showProfilesSheet -> showProfilesSheet = false
+            showFindBar -> { showFindBar = false; activeWebView?.clearMatches() }
+            showBookmarks -> showBookmarks = false
+            showHistory -> showHistory = false
             canGoBack -> activeWebView?.goBack()
+            else -> onExitBrowser()
         }
     }
 
@@ -215,7 +247,7 @@ fun BrowserScreen(
                     killSwitchOn = settings.killSwitchEnabled,
                     latencyMs = activeServer?.let { latency[it.id]?.rttMs },
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
-                    profileName = activeProfile?.name ?: "Profile",
+                    profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
                     urlInput = urlInput,
                     onUrlInputChange = { urlInput = it },
@@ -259,7 +291,7 @@ fun BrowserScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 if (activeTab != null) {
                     val tab = activeTab
-                    val profile = profiles.firstOrNull { it.id == tab.profileId }
+                    val profile = viewModel.profileForTab(tab)
                         ?: profiles.firstOrNull()
                     if (profile != null) {
                         val serverForTab = servers.firstOrNull { it.id == settings.activeServerId }
@@ -299,6 +331,9 @@ fun BrowserScreen(
                                     },
                                     onReceivedError = { message ->
                                         viewModel.onTabError(tab.id, message)
+                                    },
+                                    onDownloadStarted = { fileName ->
+                                        viewModel.snack("Downloading $fileName")
                                     }
                                 )
                                 if (tab.url.isNotBlank()) {
@@ -366,6 +401,54 @@ fun BrowserScreen(
                     )
                 }
 
+                // Blank-password guard: never a black page — say exactly what is
+                // missing and open the server editor. (Passwords were entered
+                // in v1.0.0 testing, so this is a safety net, not the v1.0.0 cause.)
+                if (activeTab != null && needsPasswordServer != null) {
+                    PasswordRequiredCard(
+                        server = needsPasswordServer,
+                        onEnterPassword = {
+                            serverToEdit = needsPasswordServer
+                            showServerSheet = true
+                        }
+                    )
+                }
+
+                // Find-in-page bar.
+                if (showFindBar) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(12.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Search, contentDescription = null)
+                        OutlinedTextField(
+                            value = findQuery,
+                            onValueChange = {
+                                findQuery = it
+                                activeWebView?.findAllAsync(it)
+                            },
+                            singleLine = true,
+                            placeholder = { Text("Find in page") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { activeWebView?.findNext(false) }) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Previous")
+                        }
+                        IconButton(onClick = { activeWebView?.findNext(true) }) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Next")
+                        }
+                        IconButton(onClick = { showFindBar = false; findQuery = ""; activeWebView?.clearMatches() }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close find")
+                        }
+                    }
+                }
+
                 // Visual tab switcher overlay.
                 if (showTabSwitcher) {
                     TabSwitcherOverlay(
@@ -393,7 +476,7 @@ fun BrowserScreen(
                     killSwitchOn = settings.killSwitchEnabled,
                     latencyMs = activeServer?.let { latency[it.id]?.rttMs },
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
-                    profileName = activeProfile?.name ?: "Profile",
+                    profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
                     urlInput = urlInput,
                     onUrlInputChange = { urlInput = it },
@@ -427,11 +510,92 @@ fun BrowserScreen(
             }
         }
 
-        // 3-dot menu.
+        // 3-dot menu (Chrome/Orbita-style — every item works for real).
         DropdownMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }
         ) {
+            DropdownMenuItem(
+                text = { Text("New tab") },
+                leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                onClick = { showMenu = false; viewModel.newTab() }
+            )
+            DropdownMenuItem(
+                text = { Text("New Incognito tab") },
+                leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
+                onClick = { showMenu = false; viewModel.newIncognitoTab() }
+            )
+            DropdownMenuItem(
+                text = { Text("History") },
+                leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+                onClick = { showMenu = false; showHistory = true }
+            )
+            DropdownMenuItem(
+                text = { Text("Downloads") },
+                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                onClick = {
+                    showMenu = false
+                    try {
+                        context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
+                    } catch (_: Exception) {
+                        viewModel.snack("No Downloads app on this device")
+                    }
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Bookmarks") },
+                leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null) },
+                onClick = { showMenu = false; showBookmarks = true }
+            )
+            DropdownMenuItem(
+                text = { Text("Recent tabs") },
+                leadingIcon = { Icon(Icons.Filled.GridView, contentDescription = null) },
+                onClick = { showMenu = false; showTabSwitcher = true }
+            )
+            DropdownMenuItem(
+                text = { Text("Share…") },
+                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                onClick = {
+                    showMenu = false
+                    val url = activeTab?.url.orEmpty()
+                    if (url.isNotBlank()) {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, url)
+                        }
+                        context.startActivity(Intent.createChooser(intent, "Share link"))
+                    }
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Find in page") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                onClick = { showMenu = false; showFindBar = true }
+            )
+            DropdownMenuItem(
+                text = { Text("Translate…") },
+                leadingIcon = { Icon(Icons.Filled.Language, contentDescription = null) },
+                onClick = {
+                    showMenu = false
+                    val url = activeTab?.url.orEmpty()
+                    if (url.isNotBlank()) {
+                        viewModel.navigateActiveTab(
+                            "https://translate.google.com/translate?sl=auto&tl=en&u=" +
+                                URLEncoder.encode(url, "UTF-8")
+                        )
+                    } else {
+                        viewModel.snack("Open a page to translate it")
+                    }
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(if (activeTab?.desktopMode == true) "✓ Desktop site" else "Desktop site") },
+                leadingIcon = { Icon(Icons.Filled.DesktopWindows, contentDescription = null) },
+                onClick = {
+                    showMenu = false
+                    activeTab?.let { viewModel.toggleDesktopMode(it.id) }
+                }
+            )
             DropdownMenuItem(
                 text = { Text("Reload") },
                 leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
@@ -442,14 +606,6 @@ fun BrowserScreen(
                 leadingIcon = { Icon(Icons.Filled.ArrowForward, contentDescription = null) },
                 enabled = activeTab?.canGoForward == true,
                 onClick = { showMenu = false; activeWebView?.goForward() }
-            )
-            DropdownMenuItem(
-                text = { Text(if (activeTab?.desktopMode == true) "✓ Desktop site" else "Desktop site") },
-                leadingIcon = { Icon(Icons.Filled.DesktopWindows, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    activeTab?.let { viewModel.toggleDesktopMode(it.id) }
-                }
             )
             DropdownMenuItem(
                 text = { Text("Quick IP check") },
@@ -477,13 +633,40 @@ fun BrowserScreen(
         if (showServerSheet) {
             ServerSwitcherSheet(
                 viewModel = viewModel,
-                onDismiss = { showServerSheet = false }
+                onDismiss = { showServerSheet = false; serverToEdit = null },
+                editServer = serverToEdit
             )
         }
         if (showProfilesSheet) {
             ProfilesSheet(
                 viewModel = viewModel,
                 onDismiss = { showProfilesSheet = false }
+            )
+        }
+        if (showBookmarks) {
+            BookmarksSheet(
+                bookmarks = bookmarks,
+                currentUrl = activeTab?.url.orEmpty(),
+                currentTitle = activeTab?.title.orEmpty(),
+                isBookmarked = activeTab?.url?.let { viewModel.isBookmarked(it) } == true,
+                onToggleBookmark = {
+                    val url = activeTab?.url.orEmpty()
+                    if (url.isNotBlank()) {
+                        if (viewModel.isBookmarked(url)) viewModel.removeBookmark(url)
+                        else viewModel.addBookmark(url, activeTab?.title.orEmpty())
+                    }
+                },
+                onOpen = { url -> viewModel.navigateActiveTab(url); showBookmarks = false },
+                onDelete = { url -> viewModel.removeBookmark(url) },
+                onDismiss = { showBookmarks = false }
+            )
+        }
+        if (showHistory) {
+            HistorySheet(
+                recentUrls = recentUrls,
+                onOpen = { url -> viewModel.navigateActiveTab(url); showHistory = false },
+                onClear = { viewModel.clearHistory() },
+                onDismiss = { showHistory = false }
             )
         }
     }
@@ -818,6 +1001,137 @@ private fun ConnectionErrorPage(
                     Text("Retry")
                 }
                 OutlinedButton(onClick = onSwitchServer) { Text("Switch Server") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PasswordRequiredCard(
+    server: ServerNode,
+    onEnterPassword: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(48.dp))
+            Text("Password needed", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Enter the proxy password for ${server.name} (${server.host}:${server.port}) to browse. " +
+                    "It is stored only on this phone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = onEnterPassword,
+                colors = ButtonDefaults.buttonColors(containerColor = Emerald, contentColor = Color.Black)
+            ) { Text("Enter password") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BookmarksSheet(
+    bookmarks: List<com.fastbrowser.gologin.model.Bookmark>,
+    currentUrl: String,
+    currentTitle: String,
+    isBookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
+    onOpen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Bookmarks", style = MaterialTheme.typography.titleLarge)
+            if (currentUrl.isNotBlank()) {
+                OutlinedButton(
+                    onClick = onToggleBookmark,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Star, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isBookmarked) "Remove this page from bookmarks" else "Bookmark this page")
+                }
+            }
+            if (bookmarks.isEmpty()) {
+                Text("No bookmarks yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(bookmarks, key = { it.id }) { bookmark ->
+                        Card(
+                            onClick = { onOpen(bookmark.url) },
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(bookmark.title.ifBlank { bookmark.url }, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(cleanDomain(bookmark.url), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                IconButton(onClick = { onDelete(bookmark.url) }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Delete bookmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistorySheet(
+    recentUrls: List<String>,
+    onOpen: (String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("History", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onClear) { Text("Clear all") }
+            }
+            if (recentUrls.isEmpty()) {
+                Text("No pages visited yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(recentUrls) { url ->
+                        TextButton(
+                            onClick = { onOpen(url) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(cleanDomain(url), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
             }
         }
     }

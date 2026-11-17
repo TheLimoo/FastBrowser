@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.fastbrowser.gologin.model.AppSettings
 import com.fastbrowser.gologin.model.BackupBundle
+import com.fastbrowser.gologin.model.Bookmark
 import com.fastbrowser.gologin.model.BrowserProfile
 import com.fastbrowser.gologin.model.ProxyProtocol
 import com.fastbrowser.gologin.model.ServerNode
@@ -32,6 +33,7 @@ class SettingsRepository(private val context: Context) {
     private val profilesKey = stringPreferencesKey("profiles_json")
     private val settingsKey = stringPreferencesKey("settings_json")
     private val recentUrlsKey = stringPreferencesKey("recent_urls_json")
+    private val bookmarksKey = stringPreferencesKey("bookmarks_json")
 
     companion object {
         const val STOCKHOLM_ID = "server-stockholm"
@@ -101,6 +103,12 @@ class SettingsRepository(private val context: Context) {
         else runCatching { json.decodeFromString<List<String>>(raw) }.getOrElse { emptyList() }
     }
 
+    val bookmarksFlow: Flow<List<Bookmark>> = context.dataStore.data.map { prefs ->
+        val raw = prefs[bookmarksKey]
+        if (raw.isNullOrBlank()) emptyList()
+        else runCatching { json.decodeFromString<List<Bookmark>>(raw) }.getOrElse { emptyList() }
+    }
+
     suspend fun seedIfNeeded() {
         context.dataStore.edit { prefs ->
             if (prefs[serversKey].isNullOrBlank()) {
@@ -143,6 +151,18 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun clearRecentUrls() {
         context.dataStore.edit { it[recentUrlsKey] = json.encodeToString(emptyList<String>()) }
+    }
+
+    suspend fun addBookmark(bookmark: Bookmark) {
+        val current = bookmarksFlow.first().toMutableList()
+        if (current.any { it.url == bookmark.url }) return
+        current.add(0, bookmark)
+        context.dataStore.edit { it[bookmarksKey] = json.encodeToString(current.take(500)) }
+    }
+
+    suspend fun removeBookmark(url: String) {
+        val current = bookmarksFlow.first().filterNot { it.url == url }
+        context.dataStore.edit { it[bookmarksKey] = json.encodeToString(current) }
     }
 
     /** Export everything (servers + profiles + settings) as JSON. Contains passwords — UI warns not to share. */

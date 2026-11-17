@@ -1,9 +1,13 @@
 package com.fastbrowser.gologin.browser
 
 import android.annotation.SuppressLint
+import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Color
+import android.net.Uri
+import android.os.Environment
 import android.webkit.CookieManager
+import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -62,7 +66,8 @@ object WebViewProfileEngine {
         onPageStarted: (String) -> Unit,
         onPageFinished: (String, String) -> Unit,
         onProgressChanged: (Int) -> Unit = {},
-        onReceivedError: (String) -> Unit = {}
+        onReceivedError: (String) -> Unit = {},
+        onDownloadStarted: (String) -> Unit = {}
     ) {
         // 1. Multi-Profile Storage Isolation (Cookies, LocalStorage, Cache per profile)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
@@ -165,6 +170,27 @@ object WebViewProfileEngine {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
                 onProgressChanged(newProgress)
+            }
+        }
+
+        // Real downloads: hand off to Android's DownloadManager (visible in the
+        // system Downloads UI), not a fake menu entry.
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            try {
+                val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+                val request = DownloadManager.Request(Uri.parse(url)).apply {
+                    setMimeType(mimetype)
+                    addRequestHeader("User-Agent", userAgent)
+                    addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url) ?: "")
+                    setTitle(fileName)
+                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                }
+                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                dm.enqueue(request)
+                onDownloadStarted(fileName)
+            } catch (_: Exception) {
+                onDownloadStarted("Download failed to start")
             }
         }
     }

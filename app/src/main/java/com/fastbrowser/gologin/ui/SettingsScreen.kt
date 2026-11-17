@@ -56,23 +56,31 @@ import com.fastbrowser.gologin.App
 import com.fastbrowser.gologin.model.SearchEngine
 import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: BrowserViewModel,
-    onBack: () -> Unit
+    /** Null when shown as the Settings tab — no back arrow then. */
+    onBack: (() -> Unit)? = null
 ) {
     val settings by viewModel.settings.collectAsState()
     val servers by viewModel.servers.collectAsState()
     val latency by viewModel.latency.collectAsState()
     val pinging by viewModel.pinging.collectAsState()
+    val bridgeError by viewModel.bridgeError.collectAsState()
+    val proxyOverrideApplied by viewModel.proxyOverrideApplied.collectAsState()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
     var showServerSheet by remember { mutableStateOf(false) }
     var testResults by remember { mutableStateOf<String?>(null) }
+    var bridgeTestResult by remember { mutableStateOf<String?>(null) }
+    var bridgeTesting by remember { mutableStateOf(false) }
     var exportJson by remember { mutableStateOf<String?>(null) }
     var importText by remember { mutableStateOf("") }
     var importMessage by remember { mutableStateOf<String?>(null) }
@@ -89,8 +97,10 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 }
             )
@@ -106,6 +116,23 @@ fun SettingsScreen(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Self-hosted plan card — GoLogin shows an Upgrade-plan card here;
+            // there is nothing to buy: both servers are ours.
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Self-hosted • Unlimited • No subscription", style = MaterialTheme.typography.titleMedium, color = Emerald)
+                    Text(
+                        "Your traffic runs through your own Stockholm and Ohio servers. " +
+                            "No plan, no GB meter, no renewal — the servers are yours.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             // ------------------------------------------------ 1. Servers & Routing
             SettingsSection("Servers & Routing")
             SettingsRow(
@@ -328,8 +355,13 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("FastBrowser 1.0.0", style = MaterialTheme.typography.titleMedium)
+                    Text("FastBrowser 1.0.1", style = MaterialTheme.typography.titleMedium)
                     Text("Local bridge: 127.0.0.1:${App.localPort}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "Proxy override: ${if (proxyOverrideApplied) "applied — WebView routes through the bridge" else "not applied yet"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (proxyOverrideApplied) Emerald else DangerRed
+                    )
                     Text(
                         "Active server: ${servers.firstOrNull { it.id == settings.activeServerId }?.let { "${it.name} (${it.host}:${it.port})" } ?: "Direct (no proxy)"}",
                         style = MaterialTheme.typography.bodySmall
@@ -348,6 +380,49 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+
+            // ------------------------------------------------ Diagnostics
+            SettingsSection("Diagnostics")
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Last bridge error: " + (bridgeError?.let { err ->
+                            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(err.atMillis))
+                            "${err.message} (${err.serverName ?: "no server"} • $time)"
+                        } ?: "none — no proxy errors recorded"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (bridgeError == null) Emerald else DangerRed
+                    )
+                    Text(
+                        "Ping only checks the raw TCP port. This test fetches a real page through the " +
+                            "bridge — if it fails here, browsing will fail too, and the error above says why.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            bridgeTesting = true
+                            bridgeTestResult = null
+                            viewModel.testBridgeConnection { result ->
+                                bridgeTestResult = result
+                                bridgeTesting = false
+                            }
+                        },
+                        enabled = !bridgeTesting,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (bridgeTesting) "Testing…" else "Test Connection Through Bridge") }
+                    bridgeTestResult?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (it.startsWith("OK")) Emerald else DangerRed
+                        )
+                    }
                 }
             }
         }
