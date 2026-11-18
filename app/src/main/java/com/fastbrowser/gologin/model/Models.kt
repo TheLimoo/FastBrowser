@@ -111,7 +111,15 @@ data class BrowserTab(
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     val desktopMode: Boolean = false,
-    val loadError: String? = null
+    val loadError: String? = null,
+    /**
+     * Bumped every time the active server changes (v1.0.4): the screen watches
+     * it and calls WebView.reload() so a server switch re-routes the current
+     * page immediately — no manual Reload tap. The plain url-copy reload in
+     * reloadActiveTab() could not do this: the AndroidView update block skips
+     * loadUrl when the URL is unchanged.
+     */
+    val reloadNonce: Int = 0
 )
 
 @Serializable

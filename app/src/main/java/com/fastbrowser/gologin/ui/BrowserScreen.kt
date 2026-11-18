@@ -14,6 +14,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -101,8 +104,12 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -150,6 +157,7 @@ fun BrowserScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
     val settings by viewModel.settings.collectAsState()
     val servers by viewModel.servers.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
@@ -170,6 +178,8 @@ fun BrowserScreen(
 
     // tabId -> WebView map: tab state survives server switches and tab switches.
     val webViews = remember { mutableStateMapOf<String, WebView>() }
+    // tabId -> last reloadNonce the WebView acted on (v1.0.4 server-switch reload).
+    val reloadNonceSeen = remember { mutableStateMapOf<String, Int>() }
 
     var showServerSheet by remember { mutableStateOf(false) }
     var serverToEdit by remember { mutableStateOf<ServerNode?>(null) }
@@ -181,7 +191,9 @@ fun BrowserScreen(
     var showBookmarks by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var urlFocused by remember { mutableStateOf(false) }
-    var urlInput by remember { mutableStateOf("") }
+    // TextFieldValue (not a plain String) so tapping the bar can select the
+    // whole URL, Chrome-style. Synced from the tab while the user is not typing.
+    var urlFieldValue by remember { mutableStateOf(TextFieldValue("")) }
     var showCopyMenu by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -194,8 +206,9 @@ fun BrowserScreen(
     }
 
     // Keep the omni-bar text in sync with navigation (but never fight the user while typing).
-    LaunchedEffect(activeTab?.id, activeTab?.url) {
-        if (!urlFocused) urlInput = activeTab?.url ?: ""
+    // urlFocused is a key so losing focus re-syncs even when the URL did not change.
+    LaunchedEffect(activeTab?.id, activeTab?.url, urlFocused) {
+        if (!urlFocused) urlFieldValue = TextFieldValue(activeTab?.url ?: "")
     }
 
     // Snackbar events from the ViewModel (switch confirmations, errors, ...).
@@ -249,12 +262,19 @@ fun BrowserScreen(
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
                     profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
-                    urlInput = urlInput,
-                    onUrlInputChange = { urlInput = it },
+                    urlFieldValue = urlFieldValue,
+                    onUrlFieldValueChange = { urlFieldValue = it },
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
                     focusRequester = focusRequester,
-                    onNavigate = { viewModel.navigateActiveTab(it); urlFocused = false },
+                    onNavigate = {
+                        viewModel.navigateActiveTab(it)
+                        urlFocused = false
+                        focusManager.clearFocus()
+                    },
+                    onReloadClick = { activeWebView?.reload() },
+                    hasPage = activeTab?.url?.isNotBlank() == true,
+                    isLoading = activeTab?.isLoading == true,
                     onLatencyPillClick = { showServerSheet = true },
                     onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
@@ -358,6 +378,18 @@ fun BrowserScreen(
                                 if (tab.url.isNotBlank() && lastLoaded != tab.url) {
                                     wv.tag = tab.url
                                     wv.loadUrl(tab.url)
+                                    // A fresh load already targets the new server — consume the nonce.
+                                    reloadNonceSeen[tab.id] = tab.reloadNonce
+                                } else {
+                                    // Server-switch auto-reload (v1.0.4): the ViewModel bumps
+                                    // reloadNonce when the active server changes; reload the
+                                    // page through the new server. Same URL on purpose — the
+                                    // tag check above would skip it.
+                                    val seenNonce = reloadNonceSeen[tab.id] ?: 0
+                                    if (tab.reloadNonce != seenNonce) {
+                                        reloadNonceSeen[tab.id] = tab.reloadNonce
+                                        if (tab.url.isNotBlank()) wv.reload()
+                                    }
                                 }
                                 // Keep back/forward state fresh — only write when it changed,
                                 // otherwise this update block would loop forever.
@@ -478,12 +510,19 @@ fun BrowserScreen(
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
                     profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
-                    urlInput = urlInput,
-                    onUrlInputChange = { urlInput = it },
+                    urlFieldValue = urlFieldValue,
+                    onUrlFieldValueChange = { urlFieldValue = it },
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
                     focusRequester = focusRequester,
-                    onNavigate = { viewModel.navigateActiveTab(it); urlFocused = false },
+                    onNavigate = {
+                        viewModel.navigateActiveTab(it)
+                        urlFocused = false
+                        focusManager.clearFocus()
+                    },
+                    onReloadClick = { activeWebView?.reload() },
+                    hasPage = activeTab?.url?.isNotBlank() == true,
+                    isLoading = activeTab?.isLoading == true,
                     onLatencyPillClick = { showServerSheet = true },
                     onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
@@ -724,12 +763,15 @@ private fun OmniBar(
     isPinging: Boolean,
     profileName: String,
     tabCount: Int,
-    urlInput: String,
-    onUrlInputChange: (String) -> Unit,
+    urlFieldValue: TextFieldValue,
+    onUrlFieldValueChange: (TextFieldValue) -> Unit,
     urlFocused: Boolean,
     onUrlFocusChange: (Boolean) -> Unit,
     focusRequester: FocusRequester,
     onNavigate: (String) -> Unit,
+    onReloadClick: () -> Unit,
+    hasPage: Boolean,
+    isLoading: Boolean,
     onLatencyPillClick: () -> Unit,
     onProfileClick: () -> Unit,
     onTabCounterClick: () -> Unit,
@@ -741,58 +783,64 @@ private fun OmniBar(
     onLongPressUrl: () -> Unit,
     displayUrl: String
 ) {
-    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
+        // Row 1 — the address bar. It always gets the full remaining width:
+        // the server pill lives on row 2 now, so it can never squeeze the URL
+        // field to zero again. v1.0.3 bug: the long "Stockholm (Cloudflare) •
+        // 1130ms" pill ate the whole row, the weighted URL box collapsed, and
+        // the user could not type any link at all.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            LatencyPill(
-                activeServer = activeServer,
-                killSwitchOn = killSwitchOn,
-                latencyMs = latencyMs,
-                isPinging = isPinging,
-                onClick = onLatencyPillClick
-            )
-            Spacer(Modifier.width(6.dp))
-            // URL field: clean domain when idle, full editor when focused.
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(44.dp)
-                    .clip(RoundedCornerShape(22.dp))
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(23.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(23.dp))
             ) {
                 if (urlFocused) {
                     OutlinedTextField(
-                        value = urlInput,
-                        onValueChange = onUrlInputChange,
+                        value = urlFieldValue,
+                        onValueChange = onUrlFieldValueChange,
                         singleLine = true,
                         placeholder = { Text("Search or type URL") },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         trailingIcon = {
-                            if (urlInput.isNotEmpty()) {
-                                IconButton(onClick = { onUrlInputChange("") }) {
+                            if (urlFieldValue.text.isNotEmpty()) {
+                                IconButton(onClick = { onUrlFieldValueChange(TextFieldValue("")) }) {
                                     Icon(Icons.Filled.Clear, contentDescription = "Clear")
                                 }
                             }
                         },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { onNavigate(urlInput) }),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Go
+                        ),
+                        keyboardActions = KeyboardActions(onGo = { onNavigate(urlFieldValue.text) }),
                         modifier = Modifier
                             .fillMaxSize()
                             .focusRequester(focusRequester)
                             .onFocusChanged { onUrlFocusChange(it.isFocused) }
                     )
                 } else {
-                    Box(
+                    Row(
                         modifier = Modifier
                             .fillMaxSize()
                             .combinedClickable(
                                 onClick = {
+                                    // Open the editor with the full current URL selected,
+                                    // Chrome-style — one tap, type, Go.
+                                    onUrlFieldValueChange(
+                                        TextFieldValue(
+                                            displayUrl,
+                                            TextRange(0, displayUrl.length)
+                                        )
+                                    )
                                     onUrlFocusChange(true)
                                     scope.launch {
                                         focusRequester.requestFocus()
@@ -801,15 +849,28 @@ private fun OmniBar(
                                 onLongClick = onLongPressUrl
                             )
                             .padding(horizontal = 12.dp),
-                        contentAlignment = Alignment.CenterStart
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isHttps = displayUrl.startsWith("https://")
+                        Icon(
+                            when {
+                                displayUrl.isBlank() -> Icons.Filled.Search
+                                isHttps -> Icons.Filled.Lock
+                                else -> Icons.Filled.Public
+                            },
+                            contentDescription = null,
+                            tint = if (isHttps) Emerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Text(
                             text = if (displayUrl.isBlank()) "Search or type URL" else cleanDomain(displayUrl),
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (displayUrl.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
                             else MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
                     }
                     DropdownMenu(
@@ -829,23 +890,16 @@ private fun OmniBar(
                     }
                 }
             }
-            Spacer(Modifier.width(6.dp))
-            // Profile badge chip.
-            Surface(
-                onClick = onProfileClick,
-                shape = CircleShape,
-                color = Emerald,
-                modifier = Modifier.size(36.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        profileName.firstOrNull()?.uppercase() ?: "P",
-                        color = Color.Black,
-                        style = MaterialTheme.typography.labelLarge
-                    )
+            // Reload sits next to the bar (not inside it — avoids nested-click
+            // fights with the field's tap-to-edit). Hidden while a load is in
+            // progress (Chrome shows stop instead; a reload then would just
+            // restart the same load).
+            if (hasPage && !urlFocused && !isLoading) {
+                IconButton(onClick = onReloadClick, modifier = Modifier.size(44.dp)) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Reload")
                 }
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(4.dp))
             // Tab counter.
             Surface(
                 onClick = onTabCounterClick,
@@ -861,6 +915,34 @@ private fun OmniBar(
                 Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
             }
         }
+        // Row 2 — slim status row: server pill on the left, profile chip on the right.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        ) {
+            LatencyPill(
+                activeServer = activeServer,
+                killSwitchOn = killSwitchOn,
+                latencyMs = latencyMs,
+                isPinging = isPinging,
+                onClick = onLatencyPillClick
+            )
+            Spacer(Modifier.weight(1f))
+            Surface(
+                onClick = onProfileClick,
+                shape = CircleShape,
+                color = Emerald,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        profileName.firstOrNull()?.uppercase() ?: "P",
+                        color = Color.Black,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
         // Paste-and-go chip while the address field is focused.
         if (urlFocused) {
             Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
@@ -871,7 +953,7 @@ private fun OmniBar(
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onNavigate(urlInput) }) {
+                TextButton(onClick = { onNavigate(urlFieldValue.text) }) {
                     Text("Go")
                 }
             }
@@ -889,14 +971,42 @@ private fun NewTabPage(
     onServerClick: () -> Unit,
     onPingAll: () -> Unit
 ) {
+    var ntpInput by remember { mutableStateOf("") }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("FastBrowser", style = MaterialTheme.typography.titleLarge)
+        // Omnibox — big and obvious, Chrome-NTP style. This is the primary
+        // input on this screen: type a URL or a search and Go opens a tab
+        // through the active server (onOpenUrl resolves URL vs search).
+        OutlinedTextField(
+            value = ntpInput,
+            onValueChange = { ntpInput = it },
+            singleLine = true,
+            placeholder = { Text("Search or type a URL") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (ntpInput.isNotEmpty()) {
+                    IconButton(onClick = { ntpInput = "" }) {
+                        Icon(Icons.Filled.Clear, contentDescription = "Clear")
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = {
+                if (ntpInput.isNotBlank()) {
+                    onOpenUrl(ntpInput)
+                    ntpInput = ""
+                }
+            }),
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier.fillMaxWidth()
+        )
         Text(
             "Pick a server — every tab routes through it. Tap a card to switch.",
             style = MaterialTheme.typography.bodyMedium,

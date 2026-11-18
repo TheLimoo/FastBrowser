@@ -166,18 +166,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     // ------------------------------------------------------------------ servers
 
-    /** One-tap switch: atomic bridge hot-swap (<1ms) + persisted active server + fresh ping. */
+    /** One-tap switch: atomic bridge hot-swap (<1ms) + persisted active server +
+     *  fresh ping. v1.0.4: the current tab reloads through the new server
+     *  immediately — no "Reload" button to tap. */
     fun selectServer(server: ServerNode) {
         viewModelScope.launch {
             App.bridge.updateUpstreamServer(server, _settings.value.killSwitchEnabled)
             repository.updateSettings { it.copy(activeServerId = server.id) }
-            _events.emit(
-                UiEvent.Snack(
-                    message = "Switched to ${server.name} • ${server.host}",
-                    actionLabel = "Reload",
-                    onAction = { reloadActiveTab() }
-                )
-            )
+            if (reloadActiveTabIfLoaded()) {
+                _events.emit(UiEvent.Snack("Switched to ${server.name} — reloading"))
+            } else {
+                _events.emit(UiEvent.Snack("Switched to ${server.name} • ${server.host}"))
+            }
             pingServer(server)
         }
     }
@@ -187,7 +187,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             App.bridge.updateUpstreamServer(null, killSwitch = false)
             repository.updateSettings { it.copy(activeServerId = null) }
-            _events.emit(UiEvent.Snack("Direct connection — traffic bypasses the proxy"))
+            if (reloadActiveTabIfLoaded()) {
+                _events.emit(UiEvent.Snack("Direct connection — reloading"))
+            } else {
+                _events.emit(UiEvent.Snack("Direct connection — traffic bypasses the proxy"))
+            }
         }
     }
 
@@ -237,6 +241,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val fallback = remaining.firstOrNull()
                 App.bridge.updateUpstreamServer(fallback, _settings.value.killSwitchEnabled)
                 repository.updateSettings { it.copy(activeServerId = fallback?.id) }
+                reloadActiveTabIfLoaded()
             }
             _events.emit(UiEvent.Snack("Server '${server.name}' deleted"))
         }
@@ -278,6 +283,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (fastest != null && fastest.id != _settings.value.activeServerId) {
                 App.bridge.updateUpstreamServer(fastest, _settings.value.killSwitchEnabled)
                 repository.updateSettings { it.copy(activeServerId = fastest.id) }
+                reloadActiveTabIfLoaded()
                 if (!silent) {
                     _events.emit(
                         UiEvent.Snack("Fastest server: ${fastest.name} • ${results[fastest.id]?.rttMs} ms")
@@ -497,7 +503,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun reloadActiveTab() {
-        activeTab?.let { updateTab(it.id) { t -> t.copy(url = t.url, loadError = null) } }
+        activeTab?.let {
+            updateTab(it.id) { t ->
+                t.copy(url = t.url, loadError = null, reloadNonce = t.reloadNonce + 1)
+            }
+        }
+    }
+
+    /**
+     * v1.0.4: after any active-server change, reload the current page through
+     * the new server. Returns true when a reload was triggered. Nothing to
+     * reload when no page is open yet, and no double-reload while a load is
+     * already in progress.
+     */
+    private fun reloadActiveTabIfLoaded(): Boolean {
+        val tab = activeTab ?: return false
+        if (tab.url.isBlank() || tab.isLoading) return false
+        reloadActiveTab()
+        return true
     }
 
     fun toggleDesktopMode(tabId: String) {

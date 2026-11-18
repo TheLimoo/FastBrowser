@@ -97,7 +97,8 @@ fun ServerSwitcherSheet(
                 }
             }
             Text(
-                "One tap swaps the live connection — the bridge hot-swaps in under 1 ms, no reload needed.",
+                "One tap swaps the live connection — the bridge hot-swaps in under 1 ms and the " +
+                    "current tab reloads through the new server automatically.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
