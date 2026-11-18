@@ -1,21 +1,13 @@
 package com.fastbrowser.gologin.ui
 
-import android.app.Activity
 import android.app.DownloadManager
 import android.content.Intent
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,14 +27,12 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -66,12 +56,10 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -98,12 +86,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -148,7 +134,7 @@ fun latencyColor(rttMs: Long?): Color = when {
     else -> DangerRed
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
     viewModel: BrowserViewModel = viewModel(),
@@ -172,9 +158,6 @@ fun BrowserScreen(
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
     val activeServer = servers.firstOrNull { it.id == settings.activeServerId }
-    val activeProfile = profiles.firstOrNull { it.id == settings.activeProfileId }
-    // Incognito tabs resolve to the ephemeral profile, not the settings one.
-    val displayProfile = activeTab?.let { viewModel.profileForTab(it) } ?: activeProfile
     val needsPasswordServer = viewModel.needsPasswordServer
 
     // tabId -> WebView map: tab state survives server switches and tab switches.
@@ -184,7 +167,6 @@ fun BrowserScreen(
 
     var showServerSheet by remember { mutableStateOf(false) }
     var serverToEdit by remember { mutableStateOf<ServerNode?>(null) }
-    var showProfilesSheet by remember { mutableStateOf(false) }
     var showTabSwitcher by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showFindBar by remember { mutableStateOf(false) }
@@ -193,16 +175,11 @@ fun BrowserScreen(
     var showHistory by remember { mutableStateOf(false) }
     var urlFocused by remember { mutableStateOf(false) }
     // TextFieldValue (not a plain String) so tapping the bar can select the
-    // whole URL, Chrome-style. Synced from the tab while the user is not typing.
+    // whole URL, Chrome-style. While the user is not typing, the field shows
+    // the page's clean domain; on focus gain the full URL is swapped in
+    // with it all selected (see the focus effect below).
     var urlFieldValue by remember { mutableStateOf(TextFieldValue("")) }
-    var showCopyMenu by remember { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
     val snackbarHostState = remember { SnackbarHostState() }
-    // Paste-and-go text, read ONCE when the field gains focus (v1.0.5).
-    // The old code read the clipboard during composition on every
-    // recomposition while focused — a clipboard IPC call inside composition
-    // that can throw on some devices, one of the omnibox-crash candidates.
-    var pasteText by remember { mutableStateOf("") }
 
     // Destroy WebViews for closed tabs.
     LaunchedEffect(destroyedTabIds) {
@@ -213,31 +190,31 @@ fun BrowserScreen(
 
     // Keep the omni-bar text in sync with navigation (but never fight the user while typing).
     // urlFocused is a key so losing focus re-syncs even when the URL did not change.
+    // Unfocused, the bar shows the page's clean domain, Chrome-style.
     LaunchedEffect(activeTab?.id, activeTab?.url, urlFocused) {
-        if (!urlFocused) urlFieldValue = TextFieldValue(activeTab?.url ?: "")
+        if (!urlFocused) urlFieldValue = TextFieldValue(cleanDomain(activeTab?.url ?: ""))
     }
 
-    // Focus the address field only AFTER it is composed and attached
-    // (v1.0.5 crash fix). The old code fired focusRequester.requestFocus()
-    // from a coroutine launched in the tap handler, racing the recomposition
-    // that creates the TextField — a focus request against a requester that
-    // is mid-attach/dispose is the prime suspect for the tap-to-crash.
-    // Best-effort only: if focus fails, the field is still tappable.
-    // The clipboard is read here too, once per focus gain, never during
-    // composition (see pasteText above).
+    // v1.0.6 — THE omnibox fix. The v1.0.4/v1.0.5 design conditionally swapped
+    // the whole address field in and out: a display Row when unfocused, an
+    // OutlinedTextField when focused, with onFocusChanged writing back into
+    // the same urlFocused state that controlled which branch existed. When
+    // the TextField was first composed, onFocusChanged emitted its initial
+    // state (false — focus had not been granted yet) BEFORE the LaunchedEffect
+    // could call requestFocus(), so urlFocused flipped back to false and the
+    // editor destroyed itself the same frame it opened: tap → editor flashes
+    // open with the URL selected → instantly closes. That is exactly what
+    // the user reported on v1.0.5 ("instantly closes the selection").
+    //
+    // The field is now ONE always-composed BasicTextField (see OmniBar), so
+    // the initial false emission is harmless — it only re-syncs the domain
+    // text. And the full-URL select-all happens here, in a LaunchedEffect
+    // that runs AFTER composition (after the tap's own cursor placement),
+    // so the selection can no longer be clobbered by the tap.
     LaunchedEffect(urlFocused) {
         if (urlFocused) {
-            try {
-                focusRequester.requestFocus()
-            } catch (_: Exception) {
-            }
-            pasteText = try {
-                clipboard.getText()?.text.orEmpty()
-            } catch (_: Exception) {
-                ""
-            }
-        } else {
-            pasteText = ""
+            val url = activeTab?.url ?: ""
+            urlFieldValue = TextFieldValue(url, TextRange(0, url.length))
         }
     }
 
@@ -262,7 +239,23 @@ fun BrowserScreen(
     // 3-dot menu items (v1.0.5: rendered as a compact popup anchored to the
     // ⋮ button inside OmniBar. The old Scaffold-level DropdownMenu had no
     // anchor, so it rendered as a full-height drawer on the left edge).
+    // v1.0.6: the server switcher lives here now — the server pill row
+    // under the address bar is gone (clean Chrome-like toolbar). The menu
+    // entry shows the active server + latency and opens the same server
+    // list as the Proxies tab.
+    val activeLatency = activeServer?.let { latency[it.id] }
+    val serverMenuLabel = when {
+        activeServer == null -> "Server: Direct"
+        activeLatency?.rttMs == null -> "Server: ${activeServer.name} • …"
+        activeLatency.stale -> "Server: ${activeServer.name} • ${activeLatency.rttMs}ms (stale)"
+        else -> "Server: ${activeServer.name} • ${activeLatency.rttMs}ms"
+    }
     val menuContent: @Composable ColumnScope.() -> Unit = {
+        DropdownMenuItem(
+            text = { Text(serverMenuLabel) },
+            leadingIcon = { Icon(Icons.Filled.Speed, contentDescription = null) },
+            onClick = { showMenu = false; showServerSheet = true }
+        )
         DropdownMenuItem(
             text = { Text("New tab") },
             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -312,6 +305,20 @@ fun BrowserScreen(
                         putExtra(Intent.EXTRA_TEXT, url)
                     }
                     context.startActivity(Intent.createChooser(intent, "Share link"))
+                }
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Copy link") },
+            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                val url = activeTab?.url.orEmpty()
+                if (url.isNotBlank()) {
+                    clipboard.setText(AnnotatedString(url))
+                    viewModel.snack("URL copied")
+                } else {
+                    viewModel.snack("No page open to copy")
                 }
             }
         )
@@ -378,13 +385,14 @@ fun BrowserScreen(
         )
     }
 
-    // Back closes overlays first, then goes back in the page, then exits the
-    // browser to the Profiles home — never out of the app by accident.
+    // Back closes overlays first, then the address editor, then goes back in
+    // the page, then exits the browser to the Profiles home — never out of
+    // the app by accident.
     BackHandler(enabled = true) {
         when {
             showTabSwitcher -> showTabSwitcher = false
             showServerSheet -> { showServerSheet = false; serverToEdit = null }
-            showProfilesSheet -> showProfilesSheet = false
+            urlFocused -> focusManager.clearFocus()
             showFindBar -> { showFindBar = false; activeWebView?.clearMatches() }
             showBookmarks -> showBookmarks = false
             showHistory -> showHistory = false
@@ -405,19 +413,11 @@ fun BrowserScreen(
         ) {
             if (!settings.bottomAddressBar) {
                 OmniBar(
-                    activeServer = activeServer,
-                    killSwitchOn = settings.killSwitchEnabled,
-                    latencyMs = activeServer?.let { latency[it.id]?.rttMs },
-                    latencyStale = activeServer?.let { latency[it.id]?.stale } ?: false,
-                    isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
-                    profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
                     urlFieldValue = urlFieldValue,
                     onUrlFieldValueChange = { urlFieldValue = it },
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
-                    focusRequester = focusRequester,
-                    pasteText = pasteText,
                     onNavigate = {
                         viewModel.navigateActiveTab(it)
                         urlFocused = false
@@ -426,30 +426,11 @@ fun BrowserScreen(
                     onReloadClick = { activeWebView?.reload() },
                     hasPage = activeTab?.url?.isNotBlank() == true,
                     isLoading = activeTab?.isLoading == true,
-                    onLatencyPillClick = { showServerSheet = true },
-                    onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
                     onMenuClick = { showMenu = true },
                     showMenu = showMenu,
                     onMenuDismiss = { showMenu = false },
                     menuContent = menuContent,
-                    onCopyUrl = {
-                        clipboard.setText(AnnotatedString(activeTab?.url ?: ""))
-                        viewModel.snack("URL copied")
-                    },
-                    onShareUrl = {
-                        val url = activeTab?.url.orEmpty()
-                        if (url.isNotBlank()) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, url)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share link"))
-                        }
-                    },
-                    showCopyMenu = showCopyMenu,
-                    onCopyMenuDismiss = { showCopyMenu = false },
-                    onLongPressUrl = { showCopyMenu = true },
                     displayUrl = activeTab?.url ?: ""
                 )
                 if (activeTab?.isLoading == true) {
@@ -659,19 +640,11 @@ fun BrowserScreen(
                     )
                 }
                 OmniBar(
-                    activeServer = activeServer,
-                    killSwitchOn = settings.killSwitchEnabled,
-                    latencyMs = activeServer?.let { latency[it.id]?.rttMs },
-                    latencyStale = activeServer?.let { latency[it.id]?.stale } ?: false,
-                    isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
-                    profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
                     urlFieldValue = urlFieldValue,
                     onUrlFieldValueChange = { urlFieldValue = it },
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
-                    focusRequester = focusRequester,
-                    pasteText = pasteText,
                     onNavigate = {
                         viewModel.navigateActiveTab(it)
                         urlFocused = false
@@ -680,30 +653,11 @@ fun BrowserScreen(
                     onReloadClick = { activeWebView?.reload() },
                     hasPage = activeTab?.url?.isNotBlank() == true,
                     isLoading = activeTab?.isLoading == true,
-                    onLatencyPillClick = { showServerSheet = true },
-                    onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
                     onMenuClick = { showMenu = true },
                     showMenu = showMenu,
                     onMenuDismiss = { showMenu = false },
                     menuContent = menuContent,
-                    onCopyUrl = {
-                        clipboard.setText(AnnotatedString(activeTab?.url ?: ""))
-                        viewModel.snack("URL copied")
-                    },
-                    onShareUrl = {
-                        val url = activeTab?.url.orEmpty()
-                        if (url.isNotBlank()) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, url)
-                            }
-                            context.startActivity(Intent.createChooser(intent, "Share link"))
-                        }
-                    },
-                    showCopyMenu = showCopyMenu,
-                    onCopyMenuDismiss = { showCopyMenu = false },
-                    onLongPressUrl = { showCopyMenu = true },
                     displayUrl = activeTab?.url ?: ""
                 )
             }
@@ -715,12 +669,6 @@ fun BrowserScreen(
                 viewModel = viewModel,
                 onDismiss = { showServerSheet = false; serverToEdit = null },
                 editServer = serverToEdit
-            )
-        }
-        if (showProfilesSheet) {
-            ProfilesSheet(
-                viewModel = viewModel,
-                onDismiss = { showProfilesSheet = false }
             )
         }
         if (showBookmarks) {
@@ -753,76 +701,16 @@ fun BrowserScreen(
 }
 
 @Composable
-private fun LatencyPill(
-    activeServer: ServerNode?,
-    killSwitchOn: Boolean,
-    latencyMs: Long?,
-    stale: Boolean = false,
-    isPinging: Boolean,
-    onClick: () -> Unit
-) {
-    val pulse = rememberInfiniteTransition(label = "pillPulse")
-    val alpha by pulse.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.45f,
-        animationSpec = infiniteRepeatable(animation = tween(700), repeatMode = RepeatMode.Reverse),
-        label = "pillAlpha"
-    )
-    // v1.0.5: a stale latency keeps the last-known number in amber instead
-    // of flipping to "offline" on one failed ping.
-    val (dotColor, label) = when {
-        activeServer == null && killSwitchOn -> DangerRed to "Kill-Switch"
-        activeServer == null -> Color.Gray to "Direct"
-        latencyMs == null -> Color.Gray to "${activeServer.name} • …"
-        stale -> WarningAmber to "${activeServer.name} • ${latencyMs}ms (stale)"
-        else -> latencyColor(latencyMs) to "${activeServer.name} • ${latencyMs}ms"
-    }
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.height(36.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 10.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .alpha(if (isPinging) alpha else 1f)
-                    .background(dotColor, CircleShape)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
 private fun OmniBar(
-    activeServer: ServerNode?,
-    killSwitchOn: Boolean,
-    latencyMs: Long?,
-    latencyStale: Boolean,
-    isPinging: Boolean,
-    profileName: String,
     tabCount: Int,
     urlFieldValue: TextFieldValue,
     onUrlFieldValueChange: (TextFieldValue) -> Unit,
     urlFocused: Boolean,
     onUrlFocusChange: (Boolean) -> Unit,
-    focusRequester: FocusRequester,
-    /** Clipboard text read once when the field gains focus (v1.0.5) —
-     *  never read during composition. */
-    pasteText: String,
     onNavigate: (String) -> Unit,
     onReloadClick: () -> Unit,
     hasPage: Boolean,
     isLoading: Boolean,
-    onLatencyPillClick: () -> Unit,
-    onProfileClick: () -> Unit,
     onTabCounterClick: () -> Unit,
     onMenuClick: () -> Unit,
     /** 3-dot popup menu (v1.0.5): a DropdownMenu inside the ⋮ button's Box,
@@ -833,23 +721,17 @@ private fun OmniBar(
     showMenu: Boolean,
     onMenuDismiss: () -> Unit,
     menuContent: @Composable ColumnScope.() -> Unit,
-    onCopyUrl: () -> Unit,
-    onShareUrl: () -> Unit,
-    showCopyMenu: Boolean,
-    onCopyMenuDismiss: () -> Unit,
-    onLongPressUrl: () -> Unit,
     displayUrl: String
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
-        // Row 1 — the address bar. It always gets the full remaining width:
-        // the server pill lives on row 2 now, so it can never squeeze the URL
-        // field to zero again. v1.0.3 bug: the long "Stockholm (Cloudflare) •
-        // 1130ms" pill ate the whole row, the weighted URL box collapsed, and
-        // the user could not type any link at all.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
+    // ONE clean row (v1.0.6): address bar + reload + tab counter + ⋮ menu.
+    // The server pill and profile chip that used to sit on a second row
+    // under the bar are gone — server switching moved into the ⋮ menu,
+    // profile switching stays in the Profiles tab. Chrome-like: nothing
+    // under the bar gets in the way.
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -858,99 +740,77 @@ private fun OmniBar(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(23.dp))
             ) {
-                if (urlFocused) {
-                    OutlinedTextField(
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)
+                ) {
+                    val isHttps = displayUrl.startsWith("https://")
+                    Icon(
+                        when {
+                            displayUrl.isBlank() -> Icons.Filled.Search
+                            isHttps -> Icons.Filled.Lock
+                            else -> Icons.Filled.Public
+                        },
+                        contentDescription = null,
+                        tint = if (isHttps) Emerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    // ONE always-composed field (v1.0.6 omnibox fix): the old
+                    // design swapped a display Row for a TextField on focus,
+                    // and the TextField's onFocusChanged(false) attach
+                    // emission destroyed the editor the same frame it opened.
+                    // Unfocused the field shows the clean domain; on focus
+                    // gain the LaunchedEffect in BrowserScreen swaps in the
+                    // full URL with it all selected. Long-press shows the
+                    // system text toolbar (Copy / Paste / Select all) — no
+                    // custom copy menu needed any more.
+                    BasicTextField(
                         value = urlFieldValue,
                         onValueChange = onUrlFieldValueChange,
                         singleLine = true,
-                        placeholder = { Text("Search or type URL") },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (urlFieldValue.text.isNotEmpty()) {
-                                IconButton(onClick = { onUrlFieldValueChange(TextFieldValue("")) }) {
-                                    Icon(Icons.Filled.Clear, contentDescription = "Clear")
-                                }
-                            }
-                        },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Uri,
                             imeAction = ImeAction.Go
                         ),
-                        keyboardActions = KeyboardActions(onGo = { onNavigate(urlFieldValue.text) }),
+                        keyboardActions = KeyboardActions(
+                            onGo = { onNavigate(urlFieldValue.text) }
+                        ),
+                        decorationBox = { innerTextField ->
+                            Box(
+                                contentAlignment = Alignment.CenterStart,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                if (urlFieldValue.text.isEmpty()) {
+                                    Text(
+                                        "Search or type URL",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
                         modifier = Modifier
-                            .fillMaxSize()
-                            .focusRequester(focusRequester)
+                            .weight(1f)
                             .onFocusChanged { onUrlFocusChange(it.isFocused) }
                     )
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .combinedClickable(
-                                onClick = {
-                                    // Open the editor with the full current URL
-                                    // selected, Chrome-style — one tap, type, Go.
-                                    // v1.0.5 crash hardening: the old tap handler
-                                    // fired focusRequester.requestFocus() from a
-                                    // coroutine, racing the recomposition that
-                                    // creates the TextField (the prime suspect
-                                    // for the tap-to-crash). Focus is now
-                                    // requested by a LaunchedEffect AFTER
-                                    // composition; this handler only sets state
-                                    // and can never throw out of the tap.
-                                    try {
-                                        onUrlFieldValueChange(
-                                            TextFieldValue(
-                                                displayUrl,
-                                                TextRange(0, displayUrl.length.coerceAtLeast(0))
-                                            )
-                                        )
-                                        onUrlFocusChange(true)
-                                    } catch (_: Exception) {
-                                        onUrlFocusChange(true)
-                                    }
-                                },
-                                onLongClick = onLongPressUrl
+                    if (urlFocused && urlFieldValue.text.isNotEmpty()) {
+                        IconButton(
+                            onClick = { onUrlFieldValueChange(TextFieldValue("")) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Clear,
+                                contentDescription = "Clear",
+                                modifier = Modifier.size(18.dp)
                             )
-                            .padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val isHttps = displayUrl.startsWith("https://")
-                        Icon(
-                            when {
-                                displayUrl.isBlank() -> Icons.Filled.Search
-                                isHttps -> Icons.Filled.Lock
-                                else -> Icons.Filled.Public
-                            },
-                            contentDescription = null,
-                            tint = if (isHttps) Emerald else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = if (displayUrl.isBlank()) "Search or type URL" else cleanDomain(displayUrl),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (displayUrl.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = showCopyMenu,
-                        onDismissRequest = onCopyMenuDismiss
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Copy URL") },
-                            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
-                            onClick = { onCopyMenuDismiss(); onCopyUrl() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share URL") },
-                            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
-                            onClick = { onCopyMenuDismiss(); onShareUrl() }
-                        )
+                        }
                     }
                 }
             }
@@ -991,53 +851,6 @@ private fun OmniBar(
                     menuContent()
                 }
             }
-        }
-        // Row 2 — slim status row: server pill on the left, profile chip on the right.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-        ) {
-            LatencyPill(
-                activeServer = activeServer,
-                killSwitchOn = killSwitchOn,
-                latencyMs = latencyMs,
-                stale = latencyStale,
-                isPinging = isPinging,
-                onClick = onLatencyPillClick
-            )
-            Spacer(Modifier.weight(1f))
-            Surface(
-                onClick = onProfileClick,
-                shape = CircleShape,
-                color = Emerald,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        profileName.firstOrNull()?.uppercase() ?: "P",
-                        color = Color.Black,
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                }
-            }
-        }
-        // Paste-and-go chip while the address field is focused.
-        // v1.0.5: uses pasteText (read once on focus gain), NOT a clipboard
-        // read here — reading the clipboard during composition was one of
-        // the omnibox-crash candidates.
-        if (urlFocused) {
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                if (pasteText.isNotBlank()) {
-                    OutlinedButton(onClick = { onNavigate(pasteText) }) {
-                        Text("Paste & Go: ${pasteText.take(24)}")
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onNavigate(urlFieldValue.text) }) {
-                    Text("Go")
-                }
-            }
-        }
     }
 }
 

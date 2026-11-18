@@ -13,10 +13,31 @@ android {
         applicationId = "com.fastbrowser.gologin"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 7
+        versionName = "1.0.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // v1.0.6: STABLE debug signing. Before this, CI signed every debug APK
+    // with the fresh ephemeral debug keystore on each GitHub runner, so
+    // every build had a different signature and Android refused to update —
+    // the user had to uninstall (losing servers/settings) for each version.
+    // The committed app/debug.keystore uses the standard public Android
+    // debug credentials (android / androiddebugkey) — the same ones every
+    // local `debug.keystore` uses. It is a DEBUG key only: it must never
+    // sign a release, and anyone could build an APK with the same
+    // signature, so it buys install-over-update, not trust. v1.0.6 itself
+    // still needs ONE last uninstall (v1.0.5 was signed with a runner
+    // keystore that cannot be matched); every update after v1.0.6 installs
+    // in place with data kept.
+    signingConfigs {
+        named("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -29,6 +50,7 @@ android {
         }
         debug {
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

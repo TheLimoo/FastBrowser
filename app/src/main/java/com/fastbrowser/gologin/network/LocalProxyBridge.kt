@@ -542,9 +542,13 @@ class LocalProxyBridge {
 
     private fun sendHttpError(out: OutputStream, code: Int, message: String) {
         val body = "<html><body style='background:#0a0a0a;color:#ff5555;font-family:sans-serif;padding:24px;'><h2>$code - $message</h2></body></html>"
-        val resp = "HTTP/1.1 $code $message\r\nContent-Type: text/html\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+        // v1.0.6: Content-Length must be the BYTE count, not the char count
+        // (the old code used body.length — wrong for any non-ASCII message).
+        val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
+        val resp = "HTTP/1.1 $code $message\r\nContent-Type: text/html\r\nContent-Length: ${bodyBytes.size}\r\nConnection: close\r\n\r\n"
         try {
             out.write(resp.toByteArray(StandardCharsets.UTF_8))
+            out.write(bodyBytes)
             out.flush()
         } catch (_: Exception) {
         }

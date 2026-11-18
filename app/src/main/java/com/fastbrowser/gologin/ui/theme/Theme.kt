@@ -30,8 +30,6 @@ val TextPrimary = Color(0xFFF2F3F5)
 val TextSecondary = Color(0xFFA6ACB7)
 val DangerRed = Color(0xFFFF5252)
 val WarningAmber = Color(0xFFFFC107)
-val StockholmBlue = Color(0xFF4FC3F7)
-val OhioRed = Color(0xFFFF8A65)
 
 private val DarkScheme = darkColorScheme(
     primary = Emerald,

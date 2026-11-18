@@ -125,8 +125,13 @@ fun ServerEditDialog(
                         testing = true
                         testResult = null
                         scope.launch {
-                            val probe = ServerNode(
-                                id = server.id, name = name, host = host,
+                            // v1.0.6: probe with a copy of the edited server
+                            // (was a fresh ServerNode that dropped transport
+                            // + wsPath — testing the Cloudflare server then
+                            // ran a plain TCP check instead of the WS
+                            // handshake, and the label lied about it).
+                            val probe = server.copy(
+                                name = name, host = host,
                                 port = port.toIntOrNull() ?: 0, protocol = protocol,
                                 username = username, password = password
                             )

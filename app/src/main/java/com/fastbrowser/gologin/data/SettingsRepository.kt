@@ -45,34 +45,13 @@ class SettingsRepository(private val context: Context) {
         const val DEFAULT_PROFILE_ID = "default_profile"
 
         fun defaultServers(): List<ServerNode> = listOf(
-            ServerNode(
-                id = STOCKHOLM_ID,
-                name = "Stockholm",
-                host = "16.192.116.137",
-                port = 10800,
-                protocol = ProxyProtocol.SOCKS5,
-                // TEST BUILD (v1.0.2): the servers currently run NO-AUTH, so both
-                // fields are blank. The bridge treats blank user+pass as no-auth.
-                username = "",
-                password = "",
-                countryCode = "SE",
-                timezoneOverride = "Europe/Stockholm"
-            ),
-            ServerNode(
-                id = OHIO_ID,
-                name = "Ohio",
-                host = "18.190.239.234",
-                port = 10800,
-                protocol = ProxyProtocol.SOCKS5,
-                username = "",
-                password = "",
-                countryCode = "US",
-                timezoneOverride = "America/New_York"
-            ),
-            // v1.0.3: Sweden through Cloudflare. Direct TCP to Sweden:10800/10801
-            // is DPI-dropped from Iran (the proxy handshake never gets through),
-            // but the same Gost behind Cloudflare on WSS :2083 works — it looks
-            // like ordinary HTTPS. Server side verified end-to-end from Ohio.
+            // v1.0.6: the list is now Ohio + Stockholm (Cloudflare) only.
+            // The direct Stockholm server (16.192.116.137:10800) is GONE
+            // from the app — it does not work from Iran (raw SOCKS5 is
+            // DPI-dropped; port 10801 failed too) and the user ordered it
+            // removed. The Sweden Gost listener on :10800 stays up on the
+            // server itself; this is app-side only. The Cloudflare route
+            // is first: it is the default active server.
             ServerNode(
                 id = STOCKHOLM_CF_ID,
                 name = "Stockholm (Cloudflare)",
@@ -85,6 +64,17 @@ class SettingsRepository(private val context: Context) {
                 timezoneOverride = "Europe/Stockholm",
                 transport = ProxyTransport.WEBSOCKET,
                 wsPath = "/ws"
+            ),
+            ServerNode(
+                id = OHIO_ID,
+                name = "Ohio",
+                host = "18.190.239.234",
+                port = 10800,
+                protocol = ProxyProtocol.SOCKS5,
+                username = "",
+                password = "",
+                countryCode = "US",
+                timezoneOverride = "America/New_York"
             )
         )
 
@@ -97,7 +87,10 @@ class SettingsRepository(private val context: Context) {
         )
 
         fun defaultSettings(): AppSettings = AppSettings(
-            activeServerId = STOCKHOLM_ID,
+            // v1.0.6: the Cloudflare route is the default — the direct
+            // Stockholm server was removed (DPI-blocked from Iran), so a
+            // fresh install or a reset must not land on a dead server.
+            activeServerId = STOCKHOLM_CF_ID,
             activeProfileId = DEFAULT_PROFILE_ID
         )
     }
@@ -152,16 +145,17 @@ class SettingsRepository(private val context: Context) {
 
     /**
      * TEST BUILD (v1.0.2) one-time migration: existing installs from v1.0.0/v1.0.1
-     * stored the old "fastbrowser" username and a password on the two known
-     * servers. The servers now run NO-AUTH, so strip both fields from the known
-     * server ids. Custom servers the user added themselves are left untouched.
-     * Returns true when anything was changed.
+     * stored the old "fastbrowser" username and a password on the Ohio server.
+     * The servers now run NO-AUTH, so strip both fields. (The direct
+     * Stockholm server is deleted outright by migrateRemoveStockholmDirect
+     * below, so it needs no credential strip here.) Custom servers the user
+     * added themselves are left untouched. Returns true when anything changed.
      */
     suspend fun migrateKnownServersToNoAuth(): Boolean {
         val current = serversFlow.first()
         var changed = false
         val migrated = current.map { server ->
-            if ((server.id == STOCKHOLM_ID || server.id == OHIO_ID) &&
+            if (server.id == OHIO_ID &&
                 (server.username.isNotBlank() || server.password.isNotBlank())
             ) {
                 changed = true
@@ -170,6 +164,32 @@ class SettingsRepository(private val context: Context) {
         }
         if (changed) saveServers(migrated)
         return changed
+    }
+
+    /**
+     * v1.0.6 one-time migration: delete the direct Stockholm server
+     * (STOCKHOLM_ID, 16.192.116.137:10800) from existing installs — it does
+     * not work from Iran and the user ordered it removed. If it was the
+     * active server, the active server becomes Stockholm (Cloudflare); if
+     * that is missing too, the first remaining server. Runs on every launch
+     * but only writes once.
+     */
+    suspend fun migrateRemoveStockholmDirect(): Boolean {
+        val current = serversFlow.first()
+        if (current.none { it.id == STOCKHOLM_ID }) return false
+        val remaining = current.filterNot { it.id == STOCKHOLM_ID }
+        if (remaining.isEmpty()) {
+            saveServers(defaultServers())
+            saveSettings(settingsFlow.first().copy(activeServerId = STOCKHOLM_CF_ID))
+            return true
+        }
+        saveServers(remaining)
+        val settings = settingsFlow.first()
+        if (settings.activeServerId == STOCKHOLM_ID) {
+            val fallback = remaining.firstOrNull { it.id == STOCKHOLM_CF_ID } ?: remaining.first()
+            saveSettings(settings.copy(activeServerId = fallback.id))
+        }
+        return true
     }
 
     /**
@@ -267,13 +287,16 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    /** Full reset: back to the pre-seeded Stockholm/Ohio servers and default settings. */
+    /** Full reset: back to the pre-seeded Stockholm (Cloudflare) + Ohio
+     *  servers and default settings. v1.0.6: bookmarks are reset too — the
+     *  old code left them behind, so a "reset" silently kept them. */
     suspend fun resetAll() {
         context.dataStore.edit { prefs ->
             prefs[serversKey] = json.encodeToString(defaultServers())
             prefs[profilesKey] = json.encodeToString(defaultProfiles())
             prefs[settingsKey] = json.encodeToString(defaultSettings())
             prefs[recentUrlsKey] = json.encodeToString(emptyList<String>())
+            prefs[bookmarksKey] = json.encodeToString(emptyList<Bookmark>())
         }
     }
 }

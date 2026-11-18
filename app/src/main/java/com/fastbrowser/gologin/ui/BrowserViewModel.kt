@@ -138,6 +138,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             // v1.0.3: add the Stockholm-via-Cloudflare (WebSocket) server to
             // existing installs that only stored the two direct servers.
             repository.migrateAddCloudflareServer()
+            // v1.0.6: remove the direct Stockholm server from existing
+            // installs (it does not work from Iran); the active server
+            // falls back to Stockholm (Cloudflare).
+            repository.migrateRemoveStockholmDirect()
             // v1.0.5: switch existing installs to the new layered dark theme
             // (their stored amoledBlackTheme=true would otherwise keep the
             // flat pure-black look the user asked to replace).

@@ -32,8 +32,9 @@ import com.fastbrowser.gologin.model.UserAgentPreset
 import com.fastbrowser.gologin.ui.theme.Emerald
 
 /**
- * Shared profile create/edit dialog — used by the Profiles sheet, the home
- * Profiles list, and the "+ Add profile" FAB.
+ * Shared profile create/edit dialog — used by the home Profiles list and
+ * the "+ Add profile" FAB. (v1.0.6: the in-browser Profiles sheet is gone;
+ * profile switching lives in the Profiles tab.)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

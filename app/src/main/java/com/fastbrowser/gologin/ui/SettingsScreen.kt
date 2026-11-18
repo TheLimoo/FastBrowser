@@ -177,7 +177,7 @@ fun SettingsScreen(
                     testResults = "Pinging ${servers.size} servers… results appear below."
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Test Both Servers Now") }
+            ) { Text("Test All Servers Now") }
             if (pinging.isNotEmpty()) {
                 Text("Pinging…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -229,7 +229,7 @@ fun SettingsScreen(
                 onClick = { showClearConfirm = true }
             )
             Text(
-                "Per-profile WebRTC shield, canvas noise, timezone and language overrides live in the Profiles sheet (tap the profile badge in the address bar).",
+                "Per-profile WebRTC shield, canvas noise, timezone and language overrides live in the Profiles tab (tap a profile card to edit it).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
