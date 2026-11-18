@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -78,7 +79,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -87,7 +87,6 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.menuAnchor
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -826,9 +825,11 @@ private fun OmniBar(
     onProfileClick: () -> Unit,
     onTabCounterClick: () -> Unit,
     onMenuClick: () -> Unit,
-    /** 3-dot popup menu (v1.0.5): anchored to the ⋮ button via menuAnchor,
+    /** 3-dot popup menu (v1.0.5): a DropdownMenu inside the ⋮ button's Box,
      *  so it renders as a compact Chrome-style dropdown at the top-right
-     *  instead of the old unanchored full-height drawer. */
+     *  instead of the old full-height drawer. NOTE: Modifier.menuAnchor() is
+     *  NOT available in this project's Material3 version (BOM 2024.12.01),
+     *  so the menu relies on DropdownMenu's default parent anchoring. */
     showMenu: Boolean,
     onMenuDismiss: () -> Unit,
     menuContent: @Composable ColumnScope.() -> Unit,
@@ -974,11 +975,11 @@ private fun OmniBar(
                     Text("$tabCount", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            // 3-dot menu — anchored to the ⋮ button (v1.0.5). The anchor is
-            // what makes it a compact Chrome-style popup at the top-right:
-            // without menuAnchor the Popup has no position and renders
-            // top-left, full-height — exactly the screenshot from v1.0.4.
-            Box(modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)) {
+            // 3-dot menu (v1.0.5): DropdownMenu inside the ⋮ button's Box —
+            // it anchors to its parent by default, so it renders as a compact
+            // Chrome-style popup at the top-right (the old v1.0.4 drawer was
+            // a different, unanchored implementation).
+            Box {
                 IconButton(onClick = onMenuClick) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
                 }
