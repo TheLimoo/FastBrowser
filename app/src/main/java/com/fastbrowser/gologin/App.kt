@@ -12,6 +12,9 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Record the next crash's stack trace for Diagnostics (v1.0.5) —
+        // installed first, before the bridge or any UI exists.
+        CrashReporter.install(this)
         localPort = bridge.start()
     }
 

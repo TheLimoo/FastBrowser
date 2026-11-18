@@ -186,6 +186,22 @@ class SettingsRepository(private val context: Context) {
         return true
     }
 
+    /**
+     * v1.0.5 one-time migration: the layered dark theme is the new default.
+     * Existing installs stored amoledBlackTheme=true (the old default),
+     * which would keep the flat pure-black background the user asked to
+     * replace. Turn it off once so the new theme is what they see — the
+     * toggle in Settings → Appearance ("AMOLED pure black") still restores
+     * true black in one tap. Runs on every launch but only writes once.
+     * Returns true when anything was changed.
+     */
+    suspend fun migrateThemeToLayered(): Boolean {
+        val current = settingsFlow.first()
+        if (!current.amoledBlackTheme) return false
+        saveSettings(current.copy(amoledBlackTheme = false))
+        return true
+    }
+
     suspend fun saveProfiles(profiles: List<BrowserProfile>) {
         context.dataStore.edit { it[profilesKey] = json.encodeToString(profiles) }
     }

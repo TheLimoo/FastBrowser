@@ -87,7 +87,7 @@ data class AppSettings(
     val adAndTrackerBlocker: Boolean = true,
     val forceDarkWebPages: Boolean = false,
     val bottomAddressBar: Boolean = false,
-    val amoledBlackTheme: Boolean = true,
+    val amoledBlackTheme: Boolean = false,
     val hardwareAcceleration: Boolean = true,
     val blockImagesDataSaver: Boolean = false,
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,

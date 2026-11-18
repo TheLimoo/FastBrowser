@@ -1,9 +1,11 @@
 package com.fastbrowser.gologin.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.fastbrowser.gologin.model.BrowserProfile
 import com.fastbrowser.gologin.ui.theme.Emerald
+import com.fastbrowser.gologin.ui.theme.SurfaceActive
 
 /**
  * Home — GoLogin-style Profiles list. Each card shows the profile name, the
@@ -55,7 +58,10 @@ fun HomeScreen(
 
     val runningProfileIds = tabs.map { it.profileId }.toSet()
     val activeServer = servers.firstOrNull { it.id == settings.activeServerId }
-    val anyOnline = latency.values.any { it.isOnline }
+    // v1.0.5: a stale latency (last ping failed, older value kept) still
+    // counts as connected here — the header must not flip to "Offline"
+    // on one failed ping while pages still load.
+    val anyOnline = latency.values.any { it.isOnline || it.stale }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(16.dp))
@@ -93,7 +99,13 @@ fun HomeScreen(
         Spacer(Modifier.height(16.dp))
         Text("Profiles", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // v1.0.5: 96dp bottom padding so the last profile card scrolls
+        // fully clear of the "+ Add profile" FAB.
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(bottom = 96.dp),
+            modifier = Modifier.weight(1f)
+        ) {
             items(profiles, key = { it.id }) { profile ->
                 val boundServer = servers.firstOrNull { it.id == profile.assignedServerId }
                     ?: activeServer
@@ -102,10 +114,14 @@ fun HomeScreen(
                 Card(
                     onClick = { onEditProfile(profile) },
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isActive) MaterialTheme.colorScheme.surfaceVariant
+                        // v1.0.5: active profile gets the faint green tint.
+                        containerColor = if (isActive) SurfaceActive
                         else MaterialTheme.colorScheme.surface
                     ),
-                    border = if (isActive) androidx.compose.foundation.BorderStroke(1.dp, Emerald) else null,
+                    border = BorderStroke(
+                        1.dp,
+                        if (isActive) Emerald else MaterialTheme.colorScheme.outline
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(

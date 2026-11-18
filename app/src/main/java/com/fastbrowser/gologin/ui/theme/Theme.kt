@@ -12,15 +12,22 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// AMOLED-first palette
+// Layered dark palette (v1.0.5 — "too simple plain black" fix).
+// The app is no longer one flat black plane: a near-black blue-charcoal
+// background, clearly lighter elevated surfaces, and visible borders give
+// every screen depth. Emerald stays the accent — it is the app's identity.
 val Emerald = Color(0xFF00E676)
 val EmeraldDark = Color(0xFF00B248)
+/** Faint green tint for the active server card. */
+val SurfaceActive = Color(0xFF122019)
 val AmoledBlack = Color(0xFF000000)
-val SlateCard = Color(0xFF121318)
-val SlateCardElevated = Color(0xFF1B1D24)
-val SlateBorder = Color(0xFF262932)
+// Default dark theme: near-black blue-charcoal, not pure black.
+val AppBackground = Color(0xFF0A0C10)
+val SlateCard = Color(0xFF15171F)
+val SlateCardElevated = Color(0xFF1F222C)
+val SlateBorder = Color(0xFF2E3342)
 val TextPrimary = Color(0xFFF2F3F5)
-val TextSecondary = Color(0xFF9BA1AB)
+val TextSecondary = Color(0xFFA6ACB7)
 val DangerRed = Color(0xFFFF5252)
 val WarningAmber = Color(0xFFFFC107)
 val StockholmBlue = Color(0xFF4FC3F7)
@@ -30,13 +37,41 @@ private val DarkScheme = darkColorScheme(
     primary = Emerald,
     onPrimary = Color.Black,
     secondary = EmeraldDark,
-    background = AmoledBlack,
+    background = AppBackground,
     surface = SlateCard,
     surfaceVariant = SlateCardElevated,
+    surfaceContainerLowest = Color(0xFF07080B),
+    surfaceContainerLow = Color(0xFF0E1015),
+    surfaceContainer = Color(0xFF191C24),
+    surfaceContainerHigh = Color(0xFF232633),
+    surfaceContainerHighest = Color(0xFF2D3140),
     onBackground = TextPrimary,
     onSurface = TextPrimary,
     onSurfaceVariant = TextSecondary,
     outline = SlateBorder,
+    outlineVariant = Color(0xFF232734),
+    error = DangerRed
+)
+
+/** AMOLED mode: true-black background, but surfaces and borders stay
+ *  visibly lighter — depth survives even at #000000. */
+private val AmoledScheme = darkColorScheme(
+    primary = Emerald,
+    onPrimary = Color.Black,
+    secondary = EmeraldDark,
+    background = AmoledBlack,
+    surface = Color(0xFF101218),
+    surfaceVariant = Color(0xFF1A1D26),
+    surfaceContainerLowest = Color(0xFF000000),
+    surfaceContainerLow = Color(0xFF0A0B0E),
+    surfaceContainer = Color(0xFF14161C),
+    surfaceContainerHigh = Color(0xFF1C1F28),
+    surfaceContainerHighest = Color(0xFF262A35),
+    onBackground = TextPrimary,
+    onSurface = TextPrimary,
+    onSurfaceVariant = TextSecondary,
+    outline = Color(0xFF272C3A),
+    outlineVariant = Color(0xFF1C2029),
     error = DangerRed
 )
 
@@ -69,8 +104,11 @@ fun FastBrowserTheme(
     amoledBlack: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val useDark = if (amoledBlack) true else isSystemInDarkTheme()
-    val scheme = if (useDark) DarkScheme else LightScheme
+    val scheme = when {
+        amoledBlack -> AmoledScheme
+        isSystemInDarkTheme() -> DarkScheme
+        else -> LightScheme
+    }
     MaterialTheme(
         colorScheme = scheme,
         typography = AppTypography,

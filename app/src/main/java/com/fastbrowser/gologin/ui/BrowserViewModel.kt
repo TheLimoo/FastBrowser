@@ -6,6 +6,8 @@ import android.webkit.WebStorage
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.fastbrowser.gologin.App
+import com.fastbrowser.gologin.CrashInfo
+import com.fastbrowser.gologin.CrashReporter
 import com.fastbrowser.gologin.browser.WebViewProfileEngine
 import com.fastbrowser.gologin.data.SettingsRepository
 import com.fastbrowser.gologin.model.AppSettings
@@ -75,6 +77,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     /** Last failure reported by the local proxy bridge (auth/connect errors). */
     val bridgeError: StateFlow<BridgeError?> = App.bridge.lastError
 
+    /** Last uncaught crash recorded by CrashReporter (v1.0.5) — shown in
+     *  Settings → Diagnostics so a crash reports its exact cause. */
+    val lastCrash: StateFlow<CrashInfo?> = CrashReporter.lastCrash
+
+    fun clearLastCrash() = CrashReporter.clear(getApplication())
+
     /** True once the WebView proxy override to 127.0.0.1 has been applied. */
     val proxyOverrideApplied: StateFlow<Boolean> = App.bridge.proxyOverrideApplied
 
@@ -130,6 +138,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             // v1.0.3: add the Stockholm-via-Cloudflare (WebSocket) server to
             // existing installs that only stored the two direct servers.
             repository.migrateAddCloudflareServer()
+            // v1.0.5: switch existing installs to the new layered dark theme
+            // (their stored amoledBlackTheme=true would otherwise keep the
+            // flat pure-black look the user asked to replace).
+            repository.migrateThemeToLayered()
             combine(
                 repository.serversFlow,
                 repository.profilesFlow,
@@ -247,11 +259,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * v1.0.5: a failed re-ping must NOT flip a server to "offline" and wipe
+     * its last-known latency. When the fresh result is offline but a
+     * previous result exists, keep the old number and mark it stale — the
+     * UI shows the old value in amber instead of "offline". Fresh online
+     * results always replace stale ones.
+     */
+    private fun mergeLatency(fresh: Map<String, ServerLatencyResult>): Map<String, ServerLatencyResult> {
+        val merged = _latency.value.toMutableMap()
+        fresh.forEach { (id, result) ->
+            val prev = merged[id]
+            merged[id] = if (result.rttMs == null && prev?.rttMs != null) {
+                prev.copy(isOnline = false, stale = true)
+            } else {
+                result
+            }
+        }
+        return merged
+    }
+
     fun pingServer(server: ServerNode) {
         viewModelScope.launch {
             _pinging.value = _pinging.value + server.id
             val result = LatencyMonitor.pingServer(server)
-            _latency.value = _latency.value + (server.id to result)
+            _latency.value = mergeLatency(mapOf(server.id to result))
             _pinging.value = _pinging.value - server.id
         }
     }
@@ -262,7 +294,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (servers.isEmpty()) return@launch
             _pinging.value = servers.map { it.id }.toSet()
             val results = LatencyMonitor.pingAll(servers)
-            _latency.value = results
+            _latency.value = mergeLatency(results)
             _pinging.value = emptySet()
         }
     }
@@ -274,7 +306,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (servers.size < 2) return@launch
             _pinging.value = servers.map { it.id }.toSet()
             val results = LatencyMonitor.pingAll(servers)
-            _latency.value = results
+            _latency.value = mergeLatency(results)
             _pinging.value = emptySet()
             val fastest = results.values
                 .filter { it.isOnline && it.rttMs != null }
@@ -497,9 +529,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun navigateActiveTab(rawInput: String) {
         val tab = activeTab ?: return
-        val url = resolveInputToUrl(rawInput.trim(), _settings.value.searchEngine)
-        updateTab(tab.id) { it.copy(url = url, loadError = null) }
-        viewModelScope.launch { repository.addRecentUrl(url) }
+        try {
+            val url = resolveInputToUrl(rawInput.trim(), _settings.value.searchEngine)
+            updateTab(tab.id) { it.copy(url = url, loadError = null) }
+            viewModelScope.launch { repository.addRecentUrl(url) }
+        } catch (e: Exception) {
+            // v1.0.5: a bad input must never kill the app (the omnibox crash
+            // path) — show a message instead and keep browsing.
+            snack("Could not open that link: ${e.javaClass.simpleName}")
+        }
     }
 
     fun reloadActiveTab() {

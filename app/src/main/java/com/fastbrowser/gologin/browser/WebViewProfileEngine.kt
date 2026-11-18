@@ -74,7 +74,10 @@ object WebViewProfileEngine {
             WebViewCompat.setProfile(webView, profile.id)
         }
 
-        webView.setBackgroundColor(Color.parseColor("#0A0A0C"))
+        // v1.0.5: match the layered dark theme's near-black background
+        // (was a hardcoded #0A0A0C) so a page's empty area blends with the
+        // app instead of sitting as a different black rectangle.
+        webView.setBackgroundColor(Color.parseColor("#0A0C10"))
 
         // Hardware acceleration toggle (real behavior, not a dead switch)
         webView.setLayerType(

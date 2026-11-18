@@ -135,14 +135,21 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         },
+                        // v1.0.5: the FAB belongs to the Profiles tab only.
+                        // It used to show on every home tab, floating over
+                        // Settings' "Reset All Settings" button, the
+                        // Diagnostics "Test Connection" button, the text-size
+                        // slider and the "Default search engine" field.
                         floatingActionButton = {
-                            ExtendedFloatingActionButton(
-                                onClick = { showAddProfile = true },
-                                containerColor = Emerald,
-                                contentColor = Color.Black,
-                                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                                text = { Text("Add profile") }
-                            )
+                            if (tab == HomeTab.PROFILES) {
+                                ExtendedFloatingActionButton(
+                                    onClick = { showAddProfile = true },
+                                    containerColor = Emerald,
+                                    contentColor = Color.Black,
+                                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                                    text = { Text("Add profile") }
+                                )
+                            }
                         }
                     ) { padding ->
                         Box(

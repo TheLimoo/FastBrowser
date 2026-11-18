@@ -1,6 +1,7 @@
 package com.fastbrowser.gologin.ui
 
 import android.content.Intent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,6 +39,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -53,10 +55,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.fastbrowser.gologin.App
+import com.fastbrowser.gologin.BuildConfig
 import com.fastbrowser.gologin.model.ProxyTransport
 import com.fastbrowser.gologin.model.SearchEngine
 import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
+import com.fastbrowser.gologin.ui.theme.WarningAmber
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -74,6 +78,7 @@ fun SettingsScreen(
     val latency by viewModel.latency.collectAsState()
     val pinging by viewModel.pinging.collectAsState()
     val bridgeError by viewModel.bridgeError.collectAsState()
+    val lastCrash by viewModel.lastCrash.collectAsState()
     val proxyOverrideApplied by viewModel.proxyOverrideApplied.collectAsState()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -103,7 +108,14 @@ fun SettingsScreen(
                             Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
-                }
+                },
+                // v1.0.5: explicit opaque colors so scrolled content never
+                // shows through the header, and the first card is never
+                // clipped under a transparent bar.
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surface
+                )
             )
         },
         containerColor = MaterialTheme.colorScheme.background
@@ -113,14 +125,17 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 24.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                // v1.0.5: 96dp bottom padding so the last item (Reset All
+                // Settings) scrolls fully clear of the "+ Add profile" FAB.
+                .padding(bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // Self-hosted plan card — GoLogin shows an Upgrade-plan card here;
             // there is nothing to buy: both servers are ours.
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -169,6 +184,7 @@ fun SettingsScreen(
             if (latency.isNotEmpty()) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -176,9 +192,16 @@ fun SettingsScreen(
                             val r = latency[server.id]
                             Text(
                                 "${flagFor(server.countryCode)} ${server.name}: " +
-                                    if (r?.isOnline == true) "${r.rttMs} ms" else "offline",
+                                    when {
+                                        r?.isOnline == true -> "${r.rttMs} ms"
+                                        // v1.0.5: a failed re-ping keeps the
+                                        // last-known latency as stale (amber)
+                                        // instead of flipping to "offline".
+                                        r?.stale == true -> "${r.rttMs} ms (stale)"
+                                        else -> "offline"
+                                    },
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = latencyColor(r?.rttMs)
+                                color = if (r?.stale == true) WarningAmber else latencyColor(r?.rttMs)
                             )
                         }
                     }
@@ -353,10 +376,13 @@ fun SettingsScreen(
             SettingsSection("About")
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("FastBrowser 1.0.3", style = MaterialTheme.typography.titleMedium)
+                    // v1.0.5: reads the real version — the old hardcoded
+                    // "FastBrowser 1.0.3" went stale on the 1.0.4 build.
+                    Text("FastBrowser ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Test build — proxy auth OFF, no password needed • Sweden via Cloudflare (WebSocket)",
                         style = MaterialTheme.typography.bodySmall,
@@ -380,9 +406,10 @@ fun SettingsScreen(
                     Text(
                         "How switching works: WebView always talks to a tiny proxy running on your phone " +
                             "(127.0.0.1). Tapping a server swaps the bridge's upstream connection atomically " +
-                            "— under 1 ms, no reload, no re-login. All browsing traffic goes through the " +
-                            "selected server; DNS is resolved on the server, never on the phone. With the " +
-                            "kill-switch on, a dead server means no traffic at all instead of a leak.",
+                            "— under 1 ms — and the current tab reloads through the new server. All browsing " +
+                            "traffic goes through the selected server; DNS is resolved on the server, never on " +
+                            "the phone. With the kill-switch on, a dead server means no traffic at all instead " +
+                            "of a leak.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -393,6 +420,7 @@ fun SettingsScreen(
             SettingsSection("Diagnostics")
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -403,6 +431,35 @@ fun SettingsScreen(
                         } ?: "none — no proxy errors recorded"),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (bridgeError == null) Emerald else DangerRed
+                    )
+                    // Last crash (v1.0.5): CrashReporter records the stack
+                    // trace of any uncaught crash on-device (nothing is
+                    // uploaded). If the app ever dies again, this shows the
+                    // exact cause instead of a blank screen.
+                    lastCrash?.let { crash ->
+                        val time = SimpleDateFormat(
+                            "yyyy-MM-dd HH:mm:ss", Locale.getDefault()
+                        ).format(Date(crash.atMillis))
+                        Text(
+                            "Last crash ($time): ${crash.exceptionName}" +
+                                (crash.message?.let { ": $it" } ?: ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = DangerRed
+                        )
+                        crash.stackLines.take(5).forEach { line ->
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { viewModel.clearLastCrash() }) {
+                            Text("Clear crash report")
+                        }
+                    } ?: Text(
+                        "Last crash: none recorded",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Emerald
                     )
                     Text(
                         "Ping only checks the raw TCP port. This test fetches a real page through the " +
@@ -579,6 +636,7 @@ private fun SettingsToggle(
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -603,6 +661,7 @@ private fun SettingsRow(
     Card(
         onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {

@@ -10,6 +10,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -76,6 +78,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -84,6 +87,7 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.menuAnchor
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -92,7 +96,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -119,8 +122,8 @@ import com.fastbrowser.gologin.model.BrowserTab
 import com.fastbrowser.gologin.model.ServerNode
 import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
+import com.fastbrowser.gologin.ui.theme.SurfaceActive
 import com.fastbrowser.gologin.ui.theme.WarningAmber
-import kotlinx.coroutines.launch
 import java.net.URLEncoder
 
 fun cleanDomain(url: String): String {
@@ -155,7 +158,6 @@ fun BrowserScreen(
     onExitBrowser: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val settings by viewModel.settings.collectAsState()
@@ -197,6 +199,11 @@ fun BrowserScreen(
     var showCopyMenu by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val snackbarHostState = remember { SnackbarHostState() }
+    // Paste-and-go text, read ONCE when the field gains focus (v1.0.5).
+    // The old code read the clipboard during composition on every
+    // recomposition while focused — a clipboard IPC call inside composition
+    // that can throw on some devices, one of the omnibox-crash candidates.
+    var pasteText by remember { mutableStateOf("") }
 
     // Destroy WebViews for closed tabs.
     LaunchedEffect(destroyedTabIds) {
@@ -209,6 +216,30 @@ fun BrowserScreen(
     // urlFocused is a key so losing focus re-syncs even when the URL did not change.
     LaunchedEffect(activeTab?.id, activeTab?.url, urlFocused) {
         if (!urlFocused) urlFieldValue = TextFieldValue(activeTab?.url ?: "")
+    }
+
+    // Focus the address field only AFTER it is composed and attached
+    // (v1.0.5 crash fix). The old code fired focusRequester.requestFocus()
+    // from a coroutine launched in the tap handler, racing the recomposition
+    // that creates the TextField — a focus request against a requester that
+    // is mid-attach/dispose is the prime suspect for the tap-to-crash.
+    // Best-effort only: if focus fails, the field is still tappable.
+    // The clipboard is read here too, once per focus gain, never during
+    // composition (see pasteText above).
+    LaunchedEffect(urlFocused) {
+        if (urlFocused) {
+            try {
+                focusRequester.requestFocus()
+            } catch (_: Exception) {
+            }
+            pasteText = try {
+                clipboard.getText()?.text.orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+        } else {
+            pasteText = ""
+        }
     }
 
     // Snackbar events from the ViewModel (switch confirmations, errors, ...).
@@ -228,6 +259,125 @@ fun BrowserScreen(
 
     val activeWebView = activeTab?.let { webViews[it.id] }
     val canGoBack = activeTab?.canGoBack == true
+
+    // 3-dot menu items (v1.0.5: rendered as a compact popup anchored to the
+    // ⋮ button inside OmniBar. The old Scaffold-level DropdownMenu had no
+    // anchor, so it rendered as a full-height drawer on the left edge).
+    val menuContent: @Composable ColumnScope.() -> Unit = {
+        DropdownMenuItem(
+            text = { Text("New tab") },
+            leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
+            onClick = { showMenu = false; viewModel.newTab() }
+        )
+        DropdownMenuItem(
+            text = { Text("New Incognito tab") },
+            leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
+            onClick = { showMenu = false; viewModel.newIncognitoTab() }
+        )
+        DropdownMenuItem(
+            text = { Text("History") },
+            leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+            onClick = { showMenu = false; showHistory = true }
+        )
+        DropdownMenuItem(
+            text = { Text("Downloads") },
+            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                try {
+                    context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
+                } catch (_: Exception) {
+                    viewModel.snack("No Downloads app on this device")
+                }
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Bookmarks") },
+            leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null) },
+            onClick = { showMenu = false; showBookmarks = true }
+        )
+        DropdownMenuItem(
+            text = { Text("Recent tabs") },
+            leadingIcon = { Icon(Icons.Filled.GridView, contentDescription = null) },
+            onClick = { showMenu = false; showTabSwitcher = true }
+        )
+        DropdownMenuItem(
+            text = { Text("Share…") },
+            leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                val url = activeTab?.url.orEmpty()
+                if (url.isNotBlank()) {
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, url)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share link"))
+                }
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Find in page") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            onClick = { showMenu = false; showFindBar = true }
+        )
+        DropdownMenuItem(
+            text = { Text("Translate…") },
+            leadingIcon = { Icon(Icons.Filled.Language, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                val url = activeTab?.url.orEmpty()
+                if (url.isNotBlank()) {
+                    viewModel.navigateActiveTab(
+                        "https://translate.google.com/translate?sl=auto&tl=en&u=" +
+                            URLEncoder.encode(url, "UTF-8")
+                    )
+                } else {
+                    viewModel.snack("Open a page to translate it")
+                }
+            }
+        )
+        DropdownMenuItem(
+            text = { Text(if (activeTab?.desktopMode == true) "✓ Desktop site" else "Desktop site") },
+            leadingIcon = { Icon(Icons.Filled.DesktopWindows, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                activeTab?.let { viewModel.toggleDesktopMode(it.id) }
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Reload") },
+            leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
+            onClick = { showMenu = false; activeWebView?.reload() }
+        )
+        DropdownMenuItem(
+            text = { Text("Forward") },
+            leadingIcon = { Icon(Icons.Filled.ArrowForward, contentDescription = null) },
+            enabled = activeTab?.canGoForward == true,
+            onClick = { showMenu = false; activeWebView?.goForward() }
+        )
+        DropdownMenuItem(
+            text = { Text("Quick IP check") },
+            leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                viewModel.navigateActiveTab("https://browserleaks.com/ip")
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Home") },
+            leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
+            onClick = {
+                showMenu = false
+                viewModel.navigateActiveTab(settings.homePageUrl)
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Settings") },
+            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+            onClick = { showMenu = false; onOpenSettings() }
+        )
+    }
 
     // Back closes overlays first, then goes back in the page, then exits the
     // browser to the Profiles home — never out of the app by accident.
@@ -259,6 +409,7 @@ fun BrowserScreen(
                     activeServer = activeServer,
                     killSwitchOn = settings.killSwitchEnabled,
                     latencyMs = activeServer?.let { latency[it.id]?.rttMs },
+                    latencyStale = activeServer?.let { latency[it.id]?.stale } ?: false,
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
                     profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
@@ -267,6 +418,7 @@ fun BrowserScreen(
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
                     focusRequester = focusRequester,
+                    pasteText = pasteText,
                     onNavigate = {
                         viewModel.navigateActiveTab(it)
                         urlFocused = false
@@ -279,6 +431,9 @@ fun BrowserScreen(
                     onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
                     onMenuClick = { showMenu = true },
+                    showMenu = showMenu,
+                    onMenuDismiss = { showMenu = false },
+                    menuContent = menuContent,
                     onCopyUrl = {
                         clipboard.setText(AnnotatedString(activeTab?.url ?: ""))
                         viewModel.snack("URL copied")
@@ -413,6 +568,7 @@ fun BrowserScreen(
                         latency = latency,
                         pinging = pinging,
                         recentUrls = recentUrls,
+                        activeServerId = settings.activeServerId,
                         onOpenUrl = { viewModel.navigateActiveTab(it) },
                         onServerClick = { showServerSheet = true },
                         onPingAll = { viewModel.pingAll() }
@@ -507,6 +663,7 @@ fun BrowserScreen(
                     activeServer = activeServer,
                     killSwitchOn = settings.killSwitchEnabled,
                     latencyMs = activeServer?.let { latency[it.id]?.rttMs },
+                    latencyStale = activeServer?.let { latency[it.id]?.stale } ?: false,
                     isPinging = activeServer?.let { pinging.contains(it.id) } ?: false,
                     profileName = displayProfile?.name ?: "Profile",
                     tabCount = tabs.size,
@@ -515,6 +672,7 @@ fun BrowserScreen(
                     urlFocused = urlFocused,
                     onUrlFocusChange = { urlFocused = it },
                     focusRequester = focusRequester,
+                    pasteText = pasteText,
                     onNavigate = {
                         viewModel.navigateActiveTab(it)
                         urlFocused = false
@@ -527,6 +685,9 @@ fun BrowserScreen(
                     onProfileClick = { showProfilesSheet = true },
                     onTabCounterClick = { showTabSwitcher = true },
                     onMenuClick = { showMenu = true },
+                    showMenu = showMenu,
+                    onMenuDismiss = { showMenu = false },
+                    menuContent = menuContent,
                     onCopyUrl = {
                         clipboard.setText(AnnotatedString(activeTab?.url ?: ""))
                         viewModel.snack("URL copied")
@@ -549,125 +710,6 @@ fun BrowserScreen(
             }
         }
 
-        // 3-dot menu (Chrome/Orbita-style — every item works for real).
-        DropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text("New tab") },
-                leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                onClick = { showMenu = false; viewModel.newTab() }
-            )
-            DropdownMenuItem(
-                text = { Text("New Incognito tab") },
-                leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
-                onClick = { showMenu = false; viewModel.newIncognitoTab() }
-            )
-            DropdownMenuItem(
-                text = { Text("History") },
-                leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
-                onClick = { showMenu = false; showHistory = true }
-            )
-            DropdownMenuItem(
-                text = { Text("Downloads") },
-                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    try {
-                        context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
-                    } catch (_: Exception) {
-                        viewModel.snack("No Downloads app on this device")
-                    }
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Bookmarks") },
-                leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null) },
-                onClick = { showMenu = false; showBookmarks = true }
-            )
-            DropdownMenuItem(
-                text = { Text("Recent tabs") },
-                leadingIcon = { Icon(Icons.Filled.GridView, contentDescription = null) },
-                onClick = { showMenu = false; showTabSwitcher = true }
-            )
-            DropdownMenuItem(
-                text = { Text("Share…") },
-                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    val url = activeTab?.url.orEmpty()
-                    if (url.isNotBlank()) {
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, url)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Share link"))
-                    }
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Find in page") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                onClick = { showMenu = false; showFindBar = true }
-            )
-            DropdownMenuItem(
-                text = { Text("Translate…") },
-                leadingIcon = { Icon(Icons.Filled.Language, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    val url = activeTab?.url.orEmpty()
-                    if (url.isNotBlank()) {
-                        viewModel.navigateActiveTab(
-                            "https://translate.google.com/translate?sl=auto&tl=en&u=" +
-                                URLEncoder.encode(url, "UTF-8")
-                        )
-                    } else {
-                        viewModel.snack("Open a page to translate it")
-                    }
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(if (activeTab?.desktopMode == true) "✓ Desktop site" else "Desktop site") },
-                leadingIcon = { Icon(Icons.Filled.DesktopWindows, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    activeTab?.let { viewModel.toggleDesktopMode(it.id) }
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Reload") },
-                leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
-                onClick = { showMenu = false; activeWebView?.reload() }
-            )
-            DropdownMenuItem(
-                text = { Text("Forward") },
-                leadingIcon = { Icon(Icons.Filled.ArrowForward, contentDescription = null) },
-                enabled = activeTab?.canGoForward == true,
-                onClick = { showMenu = false; activeWebView?.goForward() }
-            )
-            DropdownMenuItem(
-                text = { Text("Quick IP check") },
-                leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    viewModel.navigateActiveTab("https://browserleaks.com/ip")
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Home") },
-                leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                onClick = {
-                    showMenu = false
-                    viewModel.navigateActiveTab(settings.homePageUrl)
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Settings") },
-                leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                onClick = { showMenu = false; onOpenSettings() }
-            )
-        }
 
         if (showServerSheet) {
             ServerSwitcherSheet(
@@ -716,6 +758,7 @@ private fun LatencyPill(
     activeServer: ServerNode?,
     killSwitchOn: Boolean,
     latencyMs: Long?,
+    stale: Boolean = false,
     isPinging: Boolean,
     onClick: () -> Unit
 ) {
@@ -726,10 +769,13 @@ private fun LatencyPill(
         animationSpec = infiniteRepeatable(animation = tween(700), repeatMode = RepeatMode.Reverse),
         label = "pillAlpha"
     )
+    // v1.0.5: a stale latency keeps the last-known number in amber instead
+    // of flipping to "offline" on one failed ping.
     val (dotColor, label) = when {
         activeServer == null && killSwitchOn -> DangerRed to "Kill-Switch"
         activeServer == null -> Color.Gray to "Direct"
         latencyMs == null -> Color.Gray to "${activeServer.name} • …"
+        stale -> WarningAmber to "${activeServer.name} • ${latencyMs}ms (stale)"
         else -> latencyColor(latencyMs) to "${activeServer.name} • ${latencyMs}ms"
     }
     Surface(
@@ -760,6 +806,7 @@ private fun OmniBar(
     activeServer: ServerNode?,
     killSwitchOn: Boolean,
     latencyMs: Long?,
+    latencyStale: Boolean,
     isPinging: Boolean,
     profileName: String,
     tabCount: Int,
@@ -768,6 +815,9 @@ private fun OmniBar(
     urlFocused: Boolean,
     onUrlFocusChange: (Boolean) -> Unit,
     focusRequester: FocusRequester,
+    /** Clipboard text read once when the field gains focus (v1.0.5) —
+     *  never read during composition. */
+    pasteText: String,
     onNavigate: (String) -> Unit,
     onReloadClick: () -> Unit,
     hasPage: Boolean,
@@ -776,6 +826,12 @@ private fun OmniBar(
     onProfileClick: () -> Unit,
     onTabCounterClick: () -> Unit,
     onMenuClick: () -> Unit,
+    /** 3-dot popup menu (v1.0.5): anchored to the ⋮ button via menuAnchor,
+     *  so it renders as a compact Chrome-style dropdown at the top-right
+     *  instead of the old unanchored full-height drawer. */
+    showMenu: Boolean,
+    onMenuDismiss: () -> Unit,
+    menuContent: @Composable ColumnScope.() -> Unit,
     onCopyUrl: () -> Unit,
     onShareUrl: () -> Unit,
     showCopyMenu: Boolean,
@@ -783,8 +839,6 @@ private fun OmniBar(
     onLongPressUrl: () -> Unit,
     displayUrl: String
 ) {
-    val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
         // Row 1 — the address bar. It always gets the full remaining width:
         // the server pill lives on row 2 now, so it can never squeeze the URL
@@ -833,17 +887,26 @@ private fun OmniBar(
                             .fillMaxSize()
                             .combinedClickable(
                                 onClick = {
-                                    // Open the editor with the full current URL selected,
-                                    // Chrome-style — one tap, type, Go.
-                                    onUrlFieldValueChange(
-                                        TextFieldValue(
-                                            displayUrl,
-                                            TextRange(0, displayUrl.length)
+                                    // Open the editor with the full current URL
+                                    // selected, Chrome-style — one tap, type, Go.
+                                    // v1.0.5 crash hardening: the old tap handler
+                                    // fired focusRequester.requestFocus() from a
+                                    // coroutine, racing the recomposition that
+                                    // creates the TextField (the prime suspect
+                                    // for the tap-to-crash). Focus is now
+                                    // requested by a LaunchedEffect AFTER
+                                    // composition; this handler only sets state
+                                    // and can never throw out of the tap.
+                                    try {
+                                        onUrlFieldValueChange(
+                                            TextFieldValue(
+                                                displayUrl,
+                                                TextRange(0, displayUrl.length.coerceAtLeast(0))
+                                            )
                                         )
-                                    )
-                                    onUrlFocusChange(true)
-                                    scope.launch {
-                                        focusRequester.requestFocus()
+                                        onUrlFocusChange(true)
+                                    } catch (_: Exception) {
+                                        onUrlFocusChange(true)
                                     }
                                 },
                                 onLongClick = onLongPressUrl
@@ -911,8 +974,21 @@ private fun OmniBar(
                     Text("$tabCount", style = MaterialTheme.typography.labelLarge)
                 }
             }
-            IconButton(onClick = onMenuClick) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+            // 3-dot menu — anchored to the ⋮ button (v1.0.5). The anchor is
+            // what makes it a compact Chrome-style popup at the top-right:
+            // without menuAnchor the Popup has no position and renders
+            // top-left, full-height — exactly the screenshot from v1.0.4.
+            Box(modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable)) {
+                IconButton(onClick = onMenuClick) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                }
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = onMenuDismiss,
+                    modifier = Modifier.widthIn(max = 280.dp)
+                ) {
+                    menuContent()
+                }
             }
         }
         // Row 2 — slim status row: server pill on the left, profile chip on the right.
@@ -924,6 +1000,7 @@ private fun OmniBar(
                 activeServer = activeServer,
                 killSwitchOn = killSwitchOn,
                 latencyMs = latencyMs,
+                stale = latencyStale,
                 isPinging = isPinging,
                 onClick = onLatencyPillClick
             )
@@ -944,12 +1021,14 @@ private fun OmniBar(
             }
         }
         // Paste-and-go chip while the address field is focused.
+        // v1.0.5: uses pasteText (read once on focus gain), NOT a clipboard
+        // read here — reading the clipboard during composition was one of
+        // the omnibox-crash candidates.
         if (urlFocused) {
             Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                val clipText = clipboard.getText()?.text.orEmpty()
-                if (clipText.isNotBlank()) {
-                    OutlinedButton(onClick = { onNavigate(clipText) }) {
-                        Text("Paste & Go: ${clipText.take(24)}")
+                if (pasteText.isNotBlank()) {
+                    OutlinedButton(onClick = { onNavigate(pasteText) }) {
+                        Text("Paste & Go: ${pasteText.take(24)}")
                     }
                 }
                 Spacer(Modifier.weight(1f))
@@ -967,6 +1046,7 @@ private fun NewTabPage(
     latency: Map<String, com.fastbrowser.gologin.network.ServerLatencyResult>,
     pinging: Set<String>,
     recentUrls: List<String>,
+    activeServerId: String?,
     onOpenUrl: (String) -> Unit,
     onServerClick: () -> Unit,
     onPingAll: () -> Unit
@@ -1014,9 +1094,20 @@ private fun NewTabPage(
         )
         servers.forEach { server ->
             val result = latency[server.id]
+            val isActive = server.id == activeServerId
             Card(
                 onClick = onServerClick,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                colors = CardDefaults.cardColors(
+                    // v1.0.5: the active server card carries a faint green
+                    // tint so it is visible at a glance; other cards stay
+                    // neutral. Borders give the layered theme its depth.
+                    containerColor = if (isActive) SurfaceActive
+                    else MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(
+                    1.dp,
+                    if (isActive) Emerald else MaterialTheme.colorScheme.outline
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -1038,9 +1129,12 @@ private fun NewTabPage(
                         text = when {
                             pinging.contains(server.id) -> "pinging…"
                             rtt == null -> "offline"
+                            // v1.0.5: stale keeps the last-known number in
+                            // amber instead of flipping to "offline".
+                            result.stale -> "$rtt ms (stale)"
                             else -> "$rtt ms"
                         },
-                        color = latencyColor(rtt),
+                        color = if (result?.stale == true) WarningAmber else latencyColor(rtt),
                         style = MaterialTheme.typography.labelLarge
                     )
                 }

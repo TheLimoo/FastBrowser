@@ -1,7 +1,9 @@
 package com.fastbrowser.gologin.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import com.fastbrowser.gologin.model.ServerNode
 import com.fastbrowser.gologin.ui.theme.DangerRed
 import com.fastbrowser.gologin.ui.theme.Emerald
+import com.fastbrowser.gologin.ui.theme.SurfaceActive
+import com.fastbrowser.gologin.ui.theme.WarningAmber
 
 /**
  * Proxies tab — "FastBrowser proxies": our own servers as cards. There is no
@@ -68,7 +72,14 @@ fun ProxiesScreen(viewModel: BrowserViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(16.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // v1.0.5: weight(1f) pins Add Server / Ping All to the bottom while
+        // the list scrolls; 96dp content padding keeps the last card clear
+        // of the FAB and the bottom nav bar.
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 96.dp),
+            modifier = Modifier.weight(1f)
+        ) {
             items(servers, key = { it.id }) { server ->
                 val isActive = server.id == settings.activeServerId
                 val result = latency[server.id]
@@ -76,10 +87,14 @@ fun ProxiesScreen(viewModel: BrowserViewModel) {
                 Card(
                     onClick = { viewModel.pingServer(server) },
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isActive) MaterialTheme.colorScheme.surfaceVariant
+                        // v1.0.5: active card gets a faint green tint.
+                        containerColor = if (isActive) SurfaceActive
                         else MaterialTheme.colorScheme.surface
                     ),
-                    border = if (isActive) androidx.compose.foundation.BorderStroke(1.dp, Emerald) else null,
+                    border = BorderStroke(
+                        1.dp,
+                        if (isActive) Emerald else MaterialTheme.colorScheme.outline
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
@@ -104,9 +119,12 @@ fun ProxiesScreen(viewModel: BrowserViewModel) {
                                 text = when {
                                     pinging.contains(server.id) -> "pinging…"
                                     rtt == null -> "offline"
+                                    // v1.0.5: stale keeps the last-known
+                                    // number in amber instead of "offline".
+                                    result.stale -> "$rtt ms (stale)"
                                     else -> "$rtt ms"
                                 },
-                                color = latencyColor(rtt),
+                                color = if (result?.stale == true) WarningAmber else latencyColor(rtt),
                                 style = MaterialTheme.typography.labelLarge
                             )
                         }
