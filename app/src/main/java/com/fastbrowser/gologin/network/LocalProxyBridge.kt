@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.sync.Semaphore
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.InputStream
@@ -54,6 +55,11 @@ class LocalProxyBridge {
     private val activeServerRef = AtomicReference<ServerNode?>(null)
     private val killSwitchRef = AtomicBoolean(true)
 
+    // v1.0.7: bound concurrent tunnels — at most 64 client handlers run at
+    // once. A page opening dozens of connections can no longer spawn an
+    // unbounded pile of coroutines/sockets.
+    private val connectionPermits = Semaphore(permits = 64)
+
     private val _lastError = MutableStateFlow<BridgeError?>(null)
     val lastError: StateFlow<BridgeError?> = _lastError.asStateFlow()
 
@@ -83,6 +89,17 @@ class LocalProxyBridge {
                     val client = socket.accept()
                     client.tcpNoDelay = true
                     client.keepAlive = true
+                    // v1.0.7: wait here when all 64 permits are in use
+                    // (backpressure at accept — pending connections sit in
+                    // the kernel backlog) instead of spawning handlers
+                    // without bound. On acquire failure the socket is
+                    // closed, never leaked.
+                    try {
+                        connectionPermits.acquire()
+                    } catch (e: Exception) {
+                        try { client.close() } catch (_: Exception) {}
+                        throw e
+                    }
                     launch { handleClient(client) }
                 } catch (_: Exception) {
                     if (!isRunning.get()) break
@@ -158,7 +175,7 @@ class LocalProxyBridge {
                 }
                 return@withContext
             }
-            upstreamSocket.soTimeout = 60_000
+            upstreamSocket.soTimeout = 30_000
             val upstreamIn = upstreamSocket.getInputStream()
             val upstreamOut = upstreamSocket.getOutputStream()
 
@@ -202,6 +219,10 @@ class LocalProxyBridge {
                 _lastError.value = BridgeError("Bridge error: $msg", activeServerRef.get()?.name)
             }
         } finally {
+            // v1.0.7: every handleClient call owns one permit (acquired in
+            // the accept loop) — released here on every path, including the
+            // early returns above.
+            connectionPermits.release()
             try { upstreamSocket?.close() } catch (_: Exception) {}
             try { clientSocket.close() } catch (_: Exception) {}
         }
@@ -252,7 +273,7 @@ class LocalProxyBridge {
             plain.keepAlive = true
             plain.receiveBufferSize = 65536
             plain.sendBufferSize = 65536
-            plain.connect(InetSocketAddress(server.host.trim(), server.port), 8_000)
+            plain.connect(InetSocketAddress(server.host.trim(), server.port), 10_000)
             plain
         }
 
@@ -279,7 +300,7 @@ class LocalProxyBridge {
         plain.receiveBufferSize = 65536
         plain.sendBufferSize = 65536
         try {
-            plain.connect(InetSocketAddress(host, server.port), 8_000)
+            plain.connect(InetSocketAddress(host, server.port), 10_000)
             plain.soTimeout = 10_000
             val tls = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(plain, host, server.port, true) as SSLSocket
@@ -458,7 +479,7 @@ class LocalProxyBridge {
         val (destHost, destPort) = parseHostPort(method, target, headers) ?: return
         val directSock = Socket()
         directSock.tcpNoDelay = true
-        directSock.connect(InetSocketAddress(destHost, destPort), 8_000)
+        directSock.connect(InetSocketAddress(destHost, destPort), 10_000)
         try {
             val upIn = directSock.getInputStream()
             val upOut = directSock.getOutputStream()

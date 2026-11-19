@@ -14,3 +14,8 @@ app/build/
 *.aab
 
 verify-scratch/
+
+# The user's patch-pack inbox (v1.0.7): the 4 Kotlin files were applied to
+# the app, but the pack itself (PATCH_GUIDE.md + copies) must never be
+# committed into the repo.
+improvements-inbox/

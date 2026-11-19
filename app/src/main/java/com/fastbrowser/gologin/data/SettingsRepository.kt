@@ -27,10 +27,22 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
  * Pre-seeds Stockholm + Ohio (direct) and Stockholm-via-Cloudflare (WebSocket)
  * with blank username/password on first launch (TEST BUILD v1.0.2+: the
  * servers run NO-AUTH, so blank user+pass is correct).
+ *
+ * v1.0.7: server passwords are stored ENCRYPTED (Tink AES256-GCM via
+ * CryptoManager, key in the Android Keystore, one associated-data value per
+ * server id). The boundary is here: saveServers encrypts, serversFlow
+ * decrypts, so everything in memory stays plaintext while the stored JSON
+ * is ciphertext. Legacy plaintext entries (including blank no-auth
+ * passwords) still read fine — CryptoManager passes them through.
+ * Export deliberately stays plaintext (a backup must import on a fresh
+ * install whose Keystore keyset is different); the UI already warns not
+ * to share exports.
  */
 class SettingsRepository(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private val crypto = CryptoManager(context)
 
     private val serversKey = stringPreferencesKey("servers_json")
     private val profilesKey = stringPreferencesKey("profiles_json")
@@ -97,8 +109,33 @@ class SettingsRepository(private val context: Context) {
 
     val serversFlow: Flow<List<ServerNode>> = context.dataStore.data.map { prefs ->
         val raw = prefs[serversKey]
-        if (raw.isNullOrBlank()) defaultServers()
+        val stored = if (raw.isNullOrBlank()) defaultServers()
         else runCatching { json.decodeFromString<List<ServerNode>>(raw) }.getOrElse { defaultServers() }
+        // v1.0.7: stored passwords are ciphertext — decrypt on read.
+        stored.map { node -> node.copy(password = decryptPassword(node)) }
+    }
+
+    /**
+     * v1.0.7: decrypt one stored password (associated data = the server id).
+     * Blank stays blank; legacy plaintext passes through (CryptoManager).
+     * A decrypt failure (e.g. the Keystore keyset was lost) must never kill
+     * the whole servers flow — fall back to blank; the servers are no-auth,
+     * and a stuck flow would leave the app with no servers at all.
+     */
+    private fun decryptPassword(node: ServerNode): String {
+        if (node.password.isEmpty()) return ""
+        return runCatching { crypto.decrypt(node.password, node.id.toByteArray()) }.getOrElse { "" }
+    }
+
+    /**
+     * v1.0.7: encrypt one password for storage. Blank stays blank. If
+     * encryption itself fails, keep the plaintext rather than losing the
+     * user's password — the failure mode is "not encrypted", not "lost".
+     */
+    private fun encryptPassword(node: ServerNode): String {
+        if (node.password.isEmpty()) return ""
+        return runCatching { crypto.encrypt(node.password, node.id.toByteArray()) }
+            .getOrElse { node.password }
     }
 
     val profilesFlow: Flow<List<BrowserProfile>> = context.dataStore.data.map { prefs ->
@@ -140,7 +177,9 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun saveServers(servers: List<ServerNode>) {
-        context.dataStore.edit { it[serversKey] = json.encodeToString(servers) }
+        // v1.0.7: encrypt passwords before they reach DataStore.
+        val encrypted = servers.map { it.copy(password = encryptPassword(it)) }
+        context.dataStore.edit { it[serversKey] = json.encodeToString(encrypted) }
     }
 
     /**

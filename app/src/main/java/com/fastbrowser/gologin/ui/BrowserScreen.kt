@@ -462,6 +462,8 @@ fun BrowserScreen(
                                     settings = settings,
                                     timezoneOverride = serverForTab?.timezoneOverride ?: "",
                                     desktopMode = tab.desktopMode,
+                                    // v1.0.7: downloads route through the local bridge.
+                                    localProxyPort = viewModel.bridgePort,
                                     onPageStarted = { url ->
                                         webViews[tab.id]?.tag = url
                                         viewModel.updateTab(tab.id) {

@@ -1,11 +1,8 @@
 package com.fastbrowser.gologin.browser
 
 import android.annotation.SuppressLint
-import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Color
-import android.net.Uri
-import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
@@ -27,19 +24,39 @@ import com.fastbrowser.gologin.model.BrowserProfile
 import com.fastbrowser.gologin.model.UserAgentPreset
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 object WebViewProfileEngine {
 
     private val directExecutor = Executor { runnable -> runnable.run() }
 
+    /** Runs ProxyDownloader jobs — downloads must not block the UI thread. */
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /**
      * Binds WebView globally to our local 127.0.0.1 ProxyBridge.
      * Because the bridge routes dynamically to Stockholm or Ohio, this only needs to be
      * called once when the bridge starts.
+     *
+     * v1.0.7 — FAIL CLOSED: if WebView cannot apply a proxy override
+     * (PROXY_OVERRIDE unsupported) and the kill-switch is on, onApplied is
+     * NOT called and onProxyUnsupported fires instead — the app must not
+     * silently browse directly and leak the real IP. With the kill-switch
+     * off the user explicitly allows direct traffic, so onApplied still
+     * fires (direct browsing). MainActivity shows a blocked screen in the
+     * fail-closed case, with a one-tap escape (turn the kill-switch off).
      */
-    fun bindWebViewToLocalBridge(localPort: Int, onApplied: () -> Unit = {}) {
+    fun bindWebViewToLocalBridge(
+        localPort: Int,
+        killSwitchEnabled: Boolean = true,
+        onApplied: () -> Unit = {},
+        onProxyUnsupported: () -> Unit = {}
+    ) {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            onApplied()
+            if (killSwitchEnabled) onProxyUnsupported() else onApplied()
             return
         }
         val proxyConfig = ProxyConfig.Builder()
@@ -63,6 +80,8 @@ object WebViewProfileEngine {
         settings: AppSettings,
         timezoneOverride: String = "",
         desktopMode: Boolean = false,
+        /** v1.0.7: the local bridge port downloads route through (ProxyDownloader). Required — no default, so a caller cannot silently forget it. */
+        localProxyPort: Int,
         onPageStarted: (String) -> Unit,
         onPageFinished: (String, String) -> Unit,
         onProgressChanged: (Int) -> Unit = {},
@@ -114,11 +133,19 @@ object WebViewProfileEngine {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(ws, settings.forceDarkWebPages)
         }
 
-        // 4. Document-Start Anti-Leak & Timezone Injection Script
+        // 4. Document-Start Anti-Leak & Timezone Injection Script (v1.0.7:
+        // the inline string building is replaced by AntiLeakScriptBuilder.
+        // The app's UserAgentPreset names already match the builder's
+        // expected names (DESKTOP_WINDOWS / DESKTOP_MAC / IPHONE_SAFARI /
+        // ANDROID_CHROME), so the enum name is passed straight through;
+        // desktop mode overrides with the desktop preset, as before.)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            val shieldScript = buildAntiLeakScript(
+            val shieldScript = AntiLeakScriptBuilder.build(
+                profileId = profile.id,
+                uaPresetName = if (desktopMode) UserAgentPreset.DESKTOP_WINDOWS.name
+                else profile.userAgentPreset.name,
+                canvasNoiseEnabled = profile.canvasNoiseEnabled,
                 blockWebRtc = settings.blockWebRtcGlobal || profile.blockWebRtcLeaks,
-                canvasNoise = profile.canvasNoiseEnabled,
                 timezone = timezoneOverride
             )
             WebViewCompat.addDocumentStartJavaScript(webView, shieldScript, setOf("*"))
@@ -176,24 +203,27 @@ object WebViewProfileEngine {
             }
         }
 
-        // Real downloads: hand off to Android's DownloadManager (visible in the
-        // system Downloads UI), not a fake menu entry.
+        // Real downloads (v1.0.7): fetched through the LOCAL proxy bridge
+        // (ProxyDownloader) with the profile's cookies — NOT Android's
+        // DownloadManager, which downloads DIRECTLY (bypassing the proxy
+        // and leaking the real IP) and without the profile's cookies.
         webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
-            try {
-                val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
-                val request = DownloadManager.Request(Uri.parse(url)).apply {
-                    setMimeType(mimetype)
-                    addRequestHeader("User-Agent", userAgent)
-                    addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url) ?: "")
-                    setTitle(fileName)
-                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                }
-                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                dm.enqueue(request)
-                onDownloadStarted(fileName)
-            } catch (_: Exception) {
-                onDownloadStarted("Download failed to start")
+            val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+            val cookieManager = profileCookieManager(profile)
+            downloadScope.launch {
+                val result = ProxyDownloader.download(
+                    context = context,
+                    url = url,
+                    userAgent = userAgent,
+                    fileName = fileName,
+                    mimeType = mimetype,
+                    localProxyPort = localProxyPort,
+                    profileCookieManager = cookieManager
+                )
+                result.fold(
+                    onSuccess = { savedName -> onDownloadStarted(savedName) },
+                    onFailure = { onDownloadStarted("Download failed to start") }
+                )
             }
         }
     }
@@ -236,66 +266,20 @@ object WebViewProfileEngine {
         }
     }
 
-    private fun buildAntiLeakScript(
-        blockWebRtc: Boolean,
-        canvasNoise: Boolean,
-        timezone: String
-    ): String = buildString {
-        append("(function() {\n")
-        if (blockWebRtc) {
-            // Strip local/STUN ICE candidates and disable non-proxied WebRTC peer connections
-            append("""
-                const origPC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-                if (origPC) {
-                    const PatchedPC = function(config, constraints) {
-                        const safeConfig = Object.assign({}, config, { iceServers: [], iceTransportPolicy: 'relay' });
-                        const pc = new origPC(safeConfig, constraints);
-                        const origCreateOffer = pc.createOffer.bind(pc);
-                        pc.createOffer = function(opts) {
-                            return origCreateOffer(opts);
-                        };
-                        return pc;
-                    };
-                    PatchedPC.prototype = origPC.prototype;
-                    window.RTCPeerConnection = PatchedPC;
-                    if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = PatchedPC;
-                }
-                if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-                    navigator.mediaDevices.enumerateDevices = () => Promise.resolve([]);
-                }
-            """.trimIndent())
-            append("\n")
+    /**
+     * The CookieManager for this profile's cookie store (v1.0.7): downloads
+     * must send the same cookies the WebView sent, and with MULTI_PROFILE
+     * those live in the profile's store, not the default one. Falls back to
+     * the default manager when multi-profile is unsupported, the profile
+     * does not exist yet, or the lookup fails.
+     */
+    private fun profileCookieManager(profile: BrowserProfile): CookieManager {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+            try {
+                ProfileStore.getInstance().getProfile(profile.id)?.cookieManager?.let { return it }
+            } catch (_: Exception) {
+            }
         }
-        if (timezone.isNotBlank()) {
-            append("""
-                try {
-                    const origResolved = Intl.DateTimeFormat.prototype.resolvedOptions;
-                    Intl.DateTimeFormat.prototype.resolvedOptions = function() {
-                        const res = origResolved.apply(this, arguments);
-                        res.timeZone = "$timezone";
-                        return res;
-                    };
-                } catch(e) {}
-            """.trimIndent())
-            append("\n")
-        }
-        if (canvasNoise) {
-            append("""
-                try {
-                    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                    HTMLCanvasElement.prototype.toDataURL = function() {
-                        const ctx = this.getContext('2d');
-                        if (ctx) {
-                            const shift = (Math.floor(Math.random() * 2) - 1);
-                            ctx.fillStyle = 'rgba(255,255,255,0.01)';
-                            ctx.fillRect(0, 0, 1, 1);
-                        }
-                        return origToDataURL.apply(this, arguments);
-                    };
-                } catch(e) {}
-            """.trimIndent())
-            append("\n")
-        }
-        append("})();")
+        return CookieManager.getInstance()
     }
 }

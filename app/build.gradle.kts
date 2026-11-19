@@ -13,8 +13,8 @@ android {
         applicationId = "com.fastbrowser.gologin"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 8
+        versionName = "1.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -42,7 +42,15 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // v1.0.7: R8 shrinking in the release build type only. CI still
+            // builds the debug APK (assembleDebug), so this does not change
+            // what the user installs — but a hand-built release is now
+            // actually shrunk. proguard-rules.pro did not exist before
+            // v1.0.7 (the block referenced it but minify was off); it is
+            // created in this version, so enabling this cannot fail on the
+            // missing file.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -97,6 +105,10 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // v1.0.7: Tink AES256-GCM for stored server passwords (CryptoManager).
+    implementation("com.google.crypto.tink:tink-android:1.24.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

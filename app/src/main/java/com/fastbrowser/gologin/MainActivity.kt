@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +17,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -67,11 +71,26 @@ class MainActivity : ComponentActivity() {
 
         // Bind WebView to the local bridge BEFORE the first WebView exists.
         // Content is only shown once the proxy override is applied.
+        // v1.0.7 — FAIL CLOSED: if this device's WebView cannot apply a
+        // proxy override and the kill-switch is on, the bind reports
+        // "unsupported" instead of pretending it worked — the old code
+        // called onApplied() anyway and the app browsed DIRECTLY, leaking
+        // the real IP. proxyBlocked shows an explanatory screen (with a
+        // one-tap escape: turn the kill-switch off) instead of the spinner.
         var proxyReady by mutableStateOf(false)
-        WebViewProfileEngine.bindWebViewToLocalBridge(App.localPort) {
-            App.bridge.markProxyOverrideApplied()
-            proxyReady = true
+        var proxyBlocked by mutableStateOf(false)
+        fun bindProxy(killSwitchEnabled: Boolean) {
+            WebViewProfileEngine.bindWebViewToLocalBridge(
+                App.localPort,
+                killSwitchEnabled = killSwitchEnabled,
+                onApplied = {
+                    App.bridge.markProxyOverrideApplied()
+                    proxyReady = true
+                },
+                onProxyUnsupported = { proxyBlocked = true }
+            )
         }
+        bindProxy(viewModel.settings.value.killSwitchEnabled)
 
         setContent {
             val settings by viewModel.settings.collectAsState()
@@ -82,7 +101,55 @@ class MainActivity : ComponentActivity() {
             var editingProfile by remember { mutableStateOf<BrowserProfile?>(null) }
 
             FastBrowserTheme(amoledBlack = settings.amoledBlackTheme) {
-                if (!proxyReady) {
+                if (proxyBlocked) {
+                    // v1.0.7 fail-closed screen: the WebView cannot be
+                    // proxied on this device and the kill-switch is on, so
+                    // no page may load. The escape hatch turns the
+                    // kill-switch off and re-binds (direct browsing, the
+                    // user's explicit choice) instead of leaving the app
+                    // stuck on the spinner.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                "Browsing blocked",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Text(
+                                "This device's WebView cannot route through the proxy, " +
+                                    "and the kill-switch is on — so no traffic is sent " +
+                                    "rather than leaking your real IP.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = {
+                                    viewModel.updateSettings { it.copy(killSwitchEnabled = false) }
+                                    proxyBlocked = false
+                                    bindProxy(killSwitchEnabled = false)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Emerald,
+                                    contentColor = Color.Black
+                                )
+                            ) { Text("Turn off kill-switch & continue") }
+                        }
+                    }
+                } else if (!proxyReady) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
