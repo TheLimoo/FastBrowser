@@ -1,0 +1,13 @@
+# FastBrowser v2.0.0 — analyzer settings.
+#
+# Flutter 3.50.1 deprecates `package:flutter/material.dart` (info-level
+# `deprecated_member_use`) in favour of `package:material_ui`, a new and
+# unverified package. Migrating the whole UI to it is untested and risky,
+# and material.dart still works fine in 3.50.1 — so the deprecation lint is
+# silenced here instead. Revisit only if material.dart is actually removed.
+analyzer:
+  errors:
+    deprecated_member_use: ignore
+  exclude:
+    - build/**
+    - android/**
