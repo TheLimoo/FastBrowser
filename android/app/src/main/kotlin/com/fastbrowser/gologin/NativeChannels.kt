@@ -14,6 +14,7 @@ import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
 import com.fastbrowser.gologin.data.LegacyCryptoManager
+import com.fastbrowser.gologin.data.legacyDataStore
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File

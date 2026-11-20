@@ -53,6 +53,9 @@ dependencies {
     // DataStore/Tink migration (one-time upgrade from v1.0.7).
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    // Explicit (not just transitive via DataStore): NativeChannels uses
+    // CoroutineScope/Dispatchers/flow.first directly.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.crypto.tink:tink-android:1.24.0")
 }
 
