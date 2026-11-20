@@ -370,7 +370,7 @@ class SettingsScreen extends StatelessWidget {
           _section('About'),
           const ListTile(
             title: Text('FastBrowser'),
-            subtitle: Text('Version 2.0.0 — full Flutter rewrite.\nPackage com.fastbrowser.gologin'),
+            subtitle: Text('Version 2.0.1 — release build + UI jank fixes.\nPackage com.fastbrowser.gologin'),
           ),
           const SizedBox(height: 32),
         ],

@@ -65,6 +65,11 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
+    // Each screen refreshes itself on AppState changes (ListenableBuilder
+    // rebuilds only that screen). The browser screen is the exception: it
+    // listens itself and rebuilds coalesced to one frame, because it also
+    // has to sync its native WebViews on the same tick. Nothing here
+    // rebuilds the whole app on progress/download ticks any more (v2.0.1).
     return PopScope(
       canPop: _index == 0,
       onPopInvokedWithResult: (didPop, _) => _onPopInvoked(didPop),
@@ -72,11 +77,14 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
         body: IndexedStack(
           index: _index,
           children: [
-            HomeScreen(
-              state: state,
-              onOpenBrowser: () => setState(() => _index = 1),
-              onOpenServers: () => setState(() => _index = 3),
-              onOpenSettings: () => setState(() => _index = 4),
+            ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => HomeScreen(
+                state: state,
+                onOpenBrowser: () => setState(() => _index = 1),
+                onOpenServers: () => setState(() => _index = 3),
+                onOpenSettings: () => setState(() => _index = 4),
+              ),
             ),
             BrowserScreen(
               state: state,
@@ -85,12 +93,21 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
               onOpenServers: () => setState(() => _index = 3),
               onGoHome: () => setState(() => _index = 0),
             ),
-            ProfilesScreen(
-              state: state,
-              onOpenBrowser: () => setState(() => _index = 1),
+            ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => ProfilesScreen(
+                state: state,
+                onOpenBrowser: () => setState(() => _index = 1),
+              ),
             ),
-            ServersScreen(state: state),
-            SettingsScreen(state: state),
+            ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => ServersScreen(state: state),
+            ),
+            ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => SettingsScreen(state: state),
+            ),
           ],
         ),
         bottomNavigationBar: NavigationBar(

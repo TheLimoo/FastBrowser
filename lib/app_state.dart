@@ -508,6 +508,7 @@ class AppState extends ChangeNotifier {
     updateTab(tab.copyWith(
       url: url,
       isLoading: true,
+      progress: 0,
       clearLoadError: true,
     ));
   }
@@ -525,7 +526,17 @@ class AppState extends ChangeNotifier {
 
   void onTabProgress(int progress, String tabId) {
     final tab = _tabById(tabId);
-    if (tab == null) return;
+    if (tab == null || progress == tab.progress) return;
+    // WebView progress ticks every 1% during a load, and each tick used
+    // to notifyListeners() (v2.0.0). Only report every 5 points, and
+    // always report 100 so the bar finishes. A drop means a new load
+    // started (progress reset), so always take it. This cuts a page
+    // load from ~100 rebuilds to ~20 without the bar looking stepped.
+    if (progress > tab.progress &&
+        progress != 100 &&
+        progress - tab.progress < 5) {
+      return;
+    }
     updateTab(tab.copyWith(progress: progress));
   }
 
@@ -647,6 +658,12 @@ class AppState extends ChangeNotifier {
     );
     downloads = [record, ...downloads];
     notifyListeners();
+    // Download chunks arrive fast, and every chunk used to
+    // notifyListeners() (v2.0.0). Only refresh the UI every 256 KB or
+    // 1 s, whichever comes first — the completion branch below always
+    // writes the final size, so the last value is never lost.
+    var lastNotifiedBytes = 0;
+    var lastNotifiedAt = DateTime.now().millisecondsSinceEpoch;
     try {
       final tempDir = await getTemporaryDirectory();
       final result = await downloadThroughProxy(
@@ -659,6 +676,13 @@ class AppState extends ChangeNotifier {
         tempDir: tempDir,
         saveToDownloads: NativeBridge.saveToDownloads,
         onProgress: (received, total) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (received - lastNotifiedBytes < 256 * 1024 &&
+              now - lastNotifiedAt < 1000) {
+            return;
+          }
+          lastNotifiedBytes = received;
+          lastNotifiedAt = now;
           downloads = [
             for (final d in downloads)
               d.id == record.id ? d.copyWith(sizeBytes: received) : d,
@@ -741,7 +765,7 @@ class AppState extends ChangeNotifier {
     client.connectionTimeout = const Duration(seconds: 8);
     try {
       final request = await client.getUrl(Uri.parse('https://api.ipify.org'));
-      request.headers.set(HttpHeaders.userAgentHeader, 'FastBrowser/2.0.0');
+      request.headers.set(HttpHeaders.userAgentHeader, 'FastBrowser/2.0.1');
       final response =
           await request.close().timeout(const Duration(seconds: 10));
       final body = await response.transform(const SystemEncoding().decoder).join();

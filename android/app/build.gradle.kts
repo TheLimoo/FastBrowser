@@ -14,14 +14,26 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // Stable debug signing (from v1.0.6): the committed android/app/debug.keystore
+    // Stable signing (from v1.0.6): the committed android/app/debug.keystore
     // uses the standard public Android debug credentials (android /
-    // androiddebugkey) — the same ones every local debug.keystore uses. It is
-    // a DEBUG key only: it must never sign a release, and anyone could build
-    // an APK with the same signature, so it buys install-over-update, not
-    // trust. It is what makes v2.0.0 install over v1.0.7 in place.
+    // androiddebugkey) — the same ones every local debug.keystore uses.
+    // It is a DEBUG key: anyone can reproduce this signature, so it buys
+    // install-over-update continuity, not trust. That is the intended
+    // trade-off for this app: it is a personal browser distributed as a
+    // GitHub release APK, not a Play Store app, and keeping the same
+    // certificate is what lets v2.0.1 install over v2.0.0 in place
+    // (a new key would force every user to uninstall first).
+    // Since v2.0.1 the RELEASE build is signed with this same keystore
+    // (signingConfigs.release below) — that is also what makes the release
+    // build install over the debug-signed v2.0.0.
     signingConfigs {
         named("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+        create("release") {
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -41,9 +53,10 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Deliberately the committed debug keystore (see the
+            // signingConfigs comment): same certificate as every build
+            // since v1.0.6, so release updates install in place.
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

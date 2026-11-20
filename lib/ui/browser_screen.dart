@@ -62,6 +62,12 @@ class BrowserScreenState extends State<BrowserScreen> {
   bool _findVisible = false;
   String? _lastOmniboxTabId;
 
+  /// Coalescing flag for [_onStateChanged]: several state notifications
+  /// can land before the next frame (a burst of progress ticks), and each
+  /// one used to schedule its own post-frame sync. One scheduled callback
+  /// per frame is enough.
+  bool _syncScheduled = false;
+
   AppState get _state => widget.state;
 
   @override
@@ -87,8 +93,20 @@ class BrowserScreenState extends State<BrowserScreen> {
 
   void _onStateChanged() {
     if (!mounted) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncWebViews());
+    // The omnibox text sync is cheap and synchronous; the screen rebuild
+    // and the WebView sync are coalesced to one post-frame callback per
+    // frame. The app root no longer rebuilds on state changes (v2.0.1),
+    // so this screen refreshes itself — without this setState the
+    // progress bar, tab count and toolbar would freeze.
     _syncOmnibox();
+    if (_syncScheduled) return;
+    _syncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncScheduled = false;
+      if (!mounted) return;
+      setState(() {});
+      unawaited(_syncWebViews());
+    });
   }
 
   // ----- WebView sync -----------------------------------------------------

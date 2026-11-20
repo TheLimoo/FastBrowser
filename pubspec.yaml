@@ -1,7 +1,7 @@
 name: fastbrowser
 description: "FastBrowser — a private, profile-based Android browser with its own proxy servers."
 publish_to: 'none'
-version: 2.0.0+9
+version: 2.0.1+10
 
 environment:
   sdk: ^3.8.0
