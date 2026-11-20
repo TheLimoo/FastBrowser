@@ -1,0 +1,29 @@
+name: fastbrowser
+description: "FastBrowser — a private, profile-based Android browser with its own proxy servers."
+publish_to: 'none'
+version: 2.0.0+9
+
+environment:
+  sdk: ^3.8.0
+  flutter: '>=3.35.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # State
+  provider: ^6.1.2
+  # Share backup / share links
+  share_plus: ^10.0.0
+  # Password encryption (AES-256-GCM, key in secure storage)
+  cryptography: ^2.7.0
+  flutter_secure_storage: ^9.2.2
+  # App documents / temp dirs
+  path_provider: ^2.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

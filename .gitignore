@@ -1,9 +1,18 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+
+# Android
 *.iml
 .gradle
 /local.properties
+android/local.properties
 /.idea/
 .DS_Store
-/build
 /captures
 .externalNativeBuild
 .cxx
@@ -12,6 +21,9 @@ app/build/
 **/build/
 *.apk
 *.aab
+
+# Misc
+*.log
 
 verify-scratch/
 

@@ -1,0 +1,18 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks
+# Exception: this repo deliberately commits its DEBUG keystore
+# (android/app/debug.keystore) so v2.0.0 installs over v1.0.7 in place.
+# It uses the public Android debug credentials and must never sign a release.
+!app/debug.keystore
